@@ -95,4 +95,5 @@ vector<Mesh> splitMeshVertically(const Mesh& original_mesh, int n);
 Mesh mergeMeshesWithoutInterface(const std::vector<Mesh>& sub_meshes);
 
 void readParams(const std::string& folderPath, double& dx, double& dy);
+void saveMeshData(const Mesh& mesh, int rank, const std::string& timestep_folder = "");
 #endif // DNS_H

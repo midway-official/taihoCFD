@@ -242,70 +242,8 @@ MPI_Bcast(&timesteps, 1, MPI_INT, 0, MPI_COMM_WORLD);
 MPI_Bcast(&mu, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 MPI_Bcast(&n_splits, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-// 检查浮点变量是否一致（dx, dy, dt, mu）
-double local_vals[4] = { dx, dy, dt, mu };
-double global_max[4], global_min[4];
 
-MPI_Allreduce(local_vals, global_max, 4, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-MPI_Allreduce(local_vals, global_min, 4, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
 
-// 检查整型变量是否一致（timesteps, n_splits）
-int local_ints[2] = { timesteps, n_splits };
-int global_int_max[2], global_int_min[2];
-
-MPI_Allreduce(local_ints, global_int_max, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-MPI_Allreduce(local_ints, global_int_min, 2, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-
-// 字符串比较（mesh_folder）
-int folder_match = 1;
-std::string expected_folder = mesh_folder;
-int folder_length_check = expected_folder.size();
-char* local_str = new char[folder_length_check + 1];
-strcpy(local_str, expected_folder.c_str());
-
-char* all_strings = new char[(folder_length_check + 1) * num_procs];
-MPI_Allgather(local_str, folder_length_check + 1, MPI_CHAR,
-              all_strings, folder_length_check + 1, MPI_CHAR,
-              MPI_COMM_WORLD);
-
-for (int i = 0; i < num_procs; ++i) {
-    if (strcmp(local_str, &all_strings[i * (folder_length_check + 1)]) != 0) {
-        folder_match = 0;
-        break;
-    }
-}
-
-int global_folder_match;
-MPI_Allreduce(&folder_match, &global_folder_match, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-
-// 打印检查结果（仅0号进程）
-if (rank == 0) {
-    bool float_consistent = true;
-    for (int i = 0; i < 4; ++i)
-        if (fabs(global_max[i] - global_min[i]) > 1e-12) float_consistent = false;
-
-    bool int_consistent = (global_int_max[0] == global_int_min[0]) && (global_int_max[1] == global_int_min[1]);
-
-    if (!float_consistent || !int_consistent || global_folder_match == 0) {
-        std::cerr << " MPI同步变量不一致！终止运行。\n";
-        if (!float_consistent)
-            std::cerr << "  → 某些浮点参数不同步 (dx/dy/dt/mu)\n";
-        if (!int_consistent)
-            std::cerr << "  → timesteps 或 n_splits 不一致\n";
-        if (global_folder_match == 0)
-            std::cerr << "  → mesh_folder 不一致\n";
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    } else {
-        std::cout << " 所有进程同步变量一致，当前值为：\n";
-        std::cout << "  dx = " << dx << ", dy = " << dy << "\n";
-        std::cout << "  dt = " << dt << ", mu = " << mu << "\n";
-        std::cout << "  timesteps = " << timesteps << ", n_splits = " << n_splits << "\n";
-        std::cout << "  mesh_folder = " << mesh_folder << "\n";
-    }
-}
-
-delete[] local_str;
-delete[] all_strings;
     // 加载原始网格
     Mesh original_mesh(mesh_folder);
     readParams(mesh_folder, dx, dy);
@@ -358,9 +296,6 @@ delete[] all_strings;
         mesh.p_prime.setZero();
         mesh.p_star.setZero();
 
-
-        //设置初始场
-  
    //设置网格参数
    int nx0,ny0;
    nx0=mesh.nx;
@@ -386,7 +321,7 @@ delete[] all_strings;
         // 切换到当前编号文件夹
       
         //piso内循环轮数 矫正2次压力
-       int max_outer_iterations=3;
+       int max_outer_iterations=4;
           
   
         
@@ -424,10 +359,10 @@ delete[] all_strings;
        y_v.setZero();
 
        //求解u的动量方程 cg求解器
-      CG_parallel(equ_u,mesh,equ_u.source,x_v,1e-2,15,rank,num_procs,l2_norm_x);
+      CG_parallel(equ_u,mesh,equ_u.source,x_v,1e-2,35,rank,num_procs,l2_norm_x);
       
        //求解v的动量方程 cg求解器
-       CG_parallel(equ_v,mesh,equ_v.source,y_v,1e-2,15,rank,num_procs,l2_norm_y);
+       CG_parallel(equ_v,mesh,equ_v.source,y_v,1e-2,35,rank,num_procs,l2_norm_y);
      
 
        //将解向量写回矩阵场
@@ -480,7 +415,7 @@ delete[] all_strings;
       
 
         //求解压力修正方程
-        CG_parallel(equ_p,mesh,equ_p.source,p_v,1e-2,80,rank,num_procs,l2_norm_p);
+        CG_parallel(equ_p,mesh,equ_p.source,p_v,1e-2,140,rank,num_procs,l2_norm_p);
      
         vectorToMatrix(p_v,mesh.p_prime,mesh);
        
@@ -512,7 +447,8 @@ delete[] all_strings;
         
         double init_l2_norm_p = -1.0;
       
-      
+        exchangeColumns(mesh.u_face, rank, num_procs);
+        exchangeColumns(mesh.v_face, rank, num_procs);
         
        
        // 记录初始残差（仅第一次迭代）

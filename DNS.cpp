@@ -1710,3 +1710,87 @@ void readParams(const std::string& folderPath, double& dx, double& dy) {
 }
 
 
+void saveMeshData(const Mesh& mesh, int rank, const std::string& timestep_folder) {
+    // 创建基础文件名
+    std::string u_filename = "u_" + std::to_string(rank) + ".dat";
+    std::string v_filename = "v_" + std::to_string(rank) + ".dat";
+    std::string p_filename = "p_" + std::to_string(rank) + ".dat";
+
+    // 如果提供了时间步文件夹，添加路径
+    if(!timestep_folder.empty()) {
+        if (!fs::exists(timestep_folder)) {
+            fs::create_directory(timestep_folder);
+        }
+        u_filename = timestep_folder + "/" + u_filename;
+        v_filename = timestep_folder + "/" + v_filename;
+        p_filename = timestep_folder + "/" + p_filename;
+    }
+
+    try {
+        // 保存 u_star
+        std::ofstream u_file(u_filename);
+        if(!u_file) throw std::runtime_error("无法创建文件: " + u_filename);
+        u_file << mesh.u_star;
+        u_file.close();
+
+        // 保存 v_star
+        std::ofstream v_file(v_filename);
+        if(!v_file) throw std::runtime_error("无法创建文件: " + v_filename);
+        v_file << mesh.v_star;
+        v_file.close();
+
+        // 保存 p_star
+        std::ofstream p_file(p_filename);
+        if(!p_file) throw std::runtime_error("无法创建文件: " + p_filename);
+        p_file << mesh.p;
+        p_file.close();
+
+        // 新建 steady 文件夹（如果不存在）
+        std::string steady_folder = "steady";
+        if (!fs::exists(steady_folder)) {
+            fs::create_directory(steady_folder);
+        }
+
+        // steady 目录下的文件名
+        std::string su_filename = steady_folder + "/u_" + std::to_string(rank) + ".dat";
+        std::string sv_filename = steady_folder + "/v_" + std::to_string(rank) + ".dat";
+        std::string sp_filename = steady_folder + "/p_" + std::to_string(rank) + ".dat";
+        std::string suf_filename = steady_folder + "/uf_" + std::to_string(rank) + ".dat";
+        std::string svf_filename = steady_folder + "/vf_" + std::to_string(rank) + ".dat";
+
+        // 保存 steady/u_star
+        std::ofstream su_file(su_filename);
+        if(!su_file) throw std::runtime_error("无法创建文件: " + su_filename);
+        su_file << mesh.u_star;
+        su_file.close();
+
+        // 保存 steady/v_star
+        std::ofstream sv_file(sv_filename);
+        if(!sv_file) throw std::runtime_error("无法创建文件: " + sv_filename);
+        sv_file << mesh.v_star;
+        sv_file.close();
+
+        // 保存 steady/p_star
+        std::ofstream sp_file(sp_filename);
+        if(!sp_file) throw std::runtime_error("无法创建文件: " + sp_filename);
+        sp_file << mesh.p_star;
+        sp_file.close();
+
+        // 保存 steady/u_face -> uf_rank
+        std::ofstream suf_file(suf_filename);
+        if(!suf_file) throw std::runtime_error("无法创建文件: " + suf_filename);
+        suf_file << mesh.u_face;
+        suf_file.close();
+
+        // 保存 steady/v_face -> vf_rank
+        std::ofstream svf_file(svf_filename);
+        if(!svf_file) throw std::runtime_error("无法创建文件: " + svf_filename);
+        svf_file << mesh.v_face;
+        svf_file.close();
+
+    } catch(const std::exception& e) {
+        std::cerr << "保存数据时出错: " << e.what() << std::endl;
+    }
+}
+
+
