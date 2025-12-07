@@ -1,4 +1,4 @@
-#include "DNS.h"
+#include "fluid.h"
 #include <filesystem>
 #include <chrono>
 namespace fs = std::filesystem;
@@ -35,7 +35,7 @@ int main ()
     mesh.setBlock(0, 0, 0, mesh.ny+1, -2, 2);      // 左边界
     mesh.setBlock(mesh.nx+1, 0, mesh.nx+1, mesh.ny+1, -1, 0);  // 右边界
 
-    mesh.setBlock(30, (mesh.ny/2)-4, L+30, (mesh.ny/2), 1, 0);
+    mesh.setBlock(30, (mesh.ny/2)-4, L+30, (mesh.ny/2), 1, 1);
 
 
     // 设置各区域速度

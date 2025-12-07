@@ -1,7 +1,7 @@
 #ifndef PARALLEL_H
 #define PARALLEL_H
 
-#include "DNS.h"
+#include "fluid.h"
 #include <mpi.h>
 #include <omp.h>
 // 声明全局变量（其他文件可访问）
