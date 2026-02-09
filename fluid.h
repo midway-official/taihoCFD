@@ -655,4 +655,37 @@ void saveforecastData(const Mesh& mesh, int rank, int timesteps,
 
 /** @} */ // end of IOFunctions
 
+// ==================== 辅助函数声明 ====================
+void parseInputParameters(int argc, char* argv[], std::string& mesh_folder, 
+                         int& timesteps, double& mu, int& n_splits);
+void broadcastParameters(std::string& mesh_folder, double& dt, int& timesteps, 
+                        double& mu, int& n_splits, int rank);
+void verifyParameterConsistency(const std::string& mesh_folder, double dt, 
+                               int timesteps, double mu, int n_splits, 
+                               int rank, int num_procs);
+void printSimulationSetup(const std::vector<Mesh>& sub_meshes, int n_splits, int rank);
+bool checkConvergence(double norm_res_x, double norm_res_y, double norm_res_p);
+// ==================== 非定常求解器辅助函数声明 ====================
+// 添加到 fluid.h 文件中
+
+// 参数解析(非定常版本)
+void parseInputParameters_unsteady(int argc, char* argv[], std::string& mesh_folder, 
+                                   double& dt, int& timesteps, double& mu, int& n_splits);
+
+// 参数广播(非定常版本)
+void broadcastParameters_unsteady(std::string& mesh_folder, double& dt, int& timesteps, 
+                                  double& mu, int& n_splits, int rank);
+
+// 参数一致性验证(非定常版本)
+void verifyParameterConsistency_unsteady(const std::string& mesh_folder, double dt, 
+                                         int timesteps, double mu, int n_splits, 
+                                         int rank, int num_procs);
+
+// 打印模拟设置(非定常版本)
+void printSimulationSetup_unsteady(const std::vector<Mesh>& sub_meshes, int n_splits, 
+                                   double dt, int timesteps, int rank);
+
+// 收敛性检查
+bool checkConvergence(double norm_res_x, double norm_res_y, double norm_res_p);
+
 #endif // FLUID_H

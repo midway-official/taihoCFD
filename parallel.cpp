@@ -436,7 +436,8 @@ void Parallel_correction2(Mesh mesh, Equation equ, MatrixXd &phi1, MatrixXd &phi
  * @post r0为最终残差范数
  */
 void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsilon, 
-                 int max_iter, int rank, int num_procs, double& r0) {
+                 int max_iter, int rank, int num_procs, double& r0,
+                 int verbose) {
     
     int n = equ.A.rows();
     SparseMatrix<double> A = equ.A;
@@ -476,11 +477,11 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
     MPI_Allreduce(&local_b_norm, &global_b_norm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
     // 特殊情况: 右端项接近零
-    if (global_b_norm < 1e-13) {
+    if (global_b_norm < 1e-20) {
         x.setZero();
         r0 = 0.0;
-        if (rank == 0) {
-            std::cout << "全局b_norm小于1e-13,直接返回零解" << std::endl;
+        if (rank == 0 && verbose == 1 ) {
+            std::cout << "  [CG] 全局b_norm < 1e-20, 返回零解" << std::endl;
         }
         MPI_Barrier(MPI_COMM_WORLD);
         return;
@@ -491,7 +492,15 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
     double global_r_norm = 0.0;
     MPI_Barrier(MPI_COMM_WORLD);
     MPI_Allreduce(&r_norm, &global_r_norm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    r0 = std::sqrt(global_r_norm);
+    
+    double initial_r_norm = std::sqrt(global_r_norm);  // 初始残差
+    r0 = initial_r_norm;
+    
+    // 用于检查残差变化的变量
+    double prev_r0 = r0;
+    const double stagnation_ratio = 0.999;  // 停滞判据: 如果残差下降不到0.1%则视为停滞
+    int stagnation_count = 0;
+    const int max_stagnation = 3;  // 连续停滞3次则终止
 
     // ===== CG迭代 =====
     int iter = 0;
@@ -522,6 +531,14 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
         MPI_Barrier(MPI_COMM_WORLD);
         MPI_Allreduce(&local_dot_p_Ap, &global_dot_p_Ap, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
+        // 防止除零
+        if (std::abs(global_dot_p_Ap) < 1e-20) {
+            if (rank == 0&& verbose == 1) {
+                std::cout << "  [CG] 警告: (p,Ap)接近零, 第" << iter << "轮提前终止" << std::endl;
+            }
+            break;
+        }
+
         double alpha = global_r_norm / global_dot_p_Ap;
 
         // ----- 更新解和残差 -----
@@ -543,177 +560,57 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
         r0 = std::sqrt(global_r_norm);
         
         iter++;
-        MPI_Barrier(MPI_COMM_WORLD);
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-}
-
-// ============================================================================
-// 并行双共轭梯度稳定法(BiCGSTAB)
-// ============================================================================
-
-/**
- * @brief 并行双共轭梯度稳定法求解线性方程组 Ax = b
- * @param equ 方程对象(包含系数矩阵A)
- * @param mesh 网格对象(用于并行通信)
- * @param b 右端项向量
- * @param x 解向量(输入初值,输出解)
- * @param epsilon 收敛容差
- * @param max_iter 最大迭代次数
- * @param rank 当前进程号
- * @param num_procs 总进程数
- * @param r0 输出最终残差范数
- * @details
- * 算法流程:
- * ```
- * 1. 初始化: r = b - Ax, r_tld = r, p = r
- * 2. 迭代:
- *    a. ρ_new = (r_tld, r)
- *    b. β = (ρ_new/ρ_old) * (α/ω)
- *    c. p = r + β*(p - ω*v)
- *    d. v = A*p
- *    e. α = ρ_new / (r_tld, v)
- *    f. s = r - α*v
- *    g. t = A*s
- *    h. ω = (t,s) / (t,t)
- *    i. x = x + α*p + ω*s
- *    j. r = s - ω*t
- * 3. 判断收敛: ||r|| < ε
- * ```
- * 
- * BiCGSTAB特点:
- * - 适用于非对称矩阵
- * - 收敛速度通常快于CG
- * - 每次迭代需要2次矩阵向量乘
- * 
- * 并行实现要点:
- * 1. **两次矩阵向量乘**: v=A*p 和 t=A*s
- * 2. **多次全局规约**: 
- *    - (r_tld, v)
- *    - (t, s)
- *    - (t, t)
- *    - ||r||²
- * 
- * @note 每次迭代包含4次MPI_Allreduce和2次exchangeColumns
- * @note 比CG更复杂但收敛更快
- * @post x被更新为方程的近似解
- * @post r0为最终残差范数
- */
-void BiCGSTAB_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsilon,
-                       int max_iter, int rank, int num_procs, double& r0) {
-    
-    int n = equ.A.rows();
-    SparseMatrix<double> A = equ.A;
-
-    // ===== 初始化残差 r = b - Ax =====
-    VectorXd r = b - A * x;
-    
-    // 转换为场矩阵进行并行修正
-    MatrixXd r_field(mesh.ny+2, mesh.nx+2);
-    MatrixXd x_field(mesh.ny+2, mesh.nx+2);
-    vectorToMatrix(r, r_field, mesh);
-    vectorToMatrix(x, x_field, mesh);
-    exchangeColumns(x_field, rank, num_procs);
-    Parallel_correction2(mesh, equ, r_field, x_field);
-    matrixToVector(r_field, r, mesh);
-
-    // ===== 初始化BiCGSTAB向量 =====
-    VectorXd r_tld = r;                    // 影子残差(固定)
-    VectorXd p = r;                        // 搜索方向
-    VectorXd v = VectorXd::Zero(n);        // A*p
-    VectorXd s, t;                         // 中间向量
-
-    double rho_old = 1.0;                  // 旧的ρ值
-    double alpha = 1.0;                    // 步长α
-    double omega = 1.0;                    // 步长ω
-    double rho_new, beta;
-
-    // ===== 计算初始残差范数 =====
-    double r_norm = r.squaredNorm();
-    double local_b_norm = b.squaredNorm();
-    double global_b_norm;
-    MPI_Allreduce(&local_b_norm, &global_b_norm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-    // 特殊情况: 右端项接近零
-    if (global_b_norm < 1e-13) {
-        x.setZero();
-        r0 = 0.0;
-        MPI_Barrier(MPI_COMM_WORLD);
-        return;
-    }
-
-    double global_r_norm;
-    MPI_Allreduce(&r_norm, &global_r_norm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    r0 = sqrt(global_r_norm);
-
-    // ===== BiCGSTAB迭代 =====
-    int iter = 0;
-    while (iter < max_iter) {
         
-        // ----- 计算 ρ_new = (r_tld, r) -----
-        rho_new = r_tld.dot(r);
-
-        // ----- 更新搜索方向 p -----
-        if (iter == 0) {
-            p = r;
-        } else {
-            beta = (rho_new / rho_old) * (alpha / omega);
-            p = r + beta * (p - omega * v);
+        // ===== 收敛性检查 =====
+        
+        // 1. 绝对收敛: ||r|| / ||r0|| < epsilon
+        double relative_residual = r0 / initial_r_norm;
+        if (relative_residual < epsilon) {
+            if (rank == 0&& verbose == 1) {
+                std::cout << "  [CG] 达到收敛: 相对残差 " << std::scientific << std::setprecision(3) 
+                          << relative_residual << " < " << epsilon 
+                          << " (第" << iter << "轮)" << std::endl;
+            }
+            MPI_Barrier(MPI_COMM_WORLD);
+            return;
         }
-
-        // ----- 计算 v = A*p (并行矩阵向量乘) -----
-        v = A * p;
         
-        MatrixXd p_field(mesh.ny+2, mesh.nx+2);
-        MatrixXd v_field(mesh.ny+2, mesh.nx+2);
-        vectorToMatrix(p, p_field, mesh);
-        vectorToMatrix(v, v_field, mesh);
-        exchangeColumns(p_field, rank, num_procs);
-        Parallel_correction(mesh, equ, v_field, p_field);
-        matrixToVector(v_field, v, mesh);
-
-        // ----- 计算 α = ρ_new / (r_tld, v) -----
-        double local_dot = r_tld.dot(v);
-        double global_dot;
-        MPI_Allreduce(&local_dot, &global_dot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        alpha = rho_new / global_dot;
-
-        // ----- 计算中间向量 s = r - α*v -----
-        s = r - alpha * v;
-
-        // ----- 计算 t = A*s (并行矩阵向量乘) -----
-        t = A * s;
+        // 2. 残差变化检查: r_current / r_previous
+        if (iter > 1) {
+            double residual_ratio = r0 / prev_r0;
+            
+            // 如果残差几乎不下降 (下降小于1%)
+            if (residual_ratio > stagnation_ratio) {
+                stagnation_count++;
+                
+                if (stagnation_count >= max_stagnation) {
+                    if (rank == 0&& verbose == 1) {
+                        std::cout << "  [CG] 残差停滞: 连续" << stagnation_count 
+                                  << "轮下降<" << (1.0 - stagnation_ratio) * 100 << "%, 第" 
+                                  << iter << "轮终止" << std::endl;
+                        std::cout << "      当前残差比值: " << std::scientific << std::setprecision(3) 
+                                  << residual_ratio << std::endl;
+                    }
+                    MPI_Barrier(MPI_COMM_WORLD);
+                    return;
+                }
+            } else {
+                // 残差有显著下降,重置停滞计数
+                stagnation_count = 0;
+            }
+        }
         
-        MatrixXd s_field(mesh.ny+2, mesh.nx+2);
-        MatrixXd t_field(mesh.ny+2, mesh.nx+2);
-        vectorToMatrix(s, s_field, mesh);
-        vectorToMatrix(t, t_field, mesh);
-        exchangeColumns(s_field, rank, num_procs);
-        Parallel_correction(mesh, equ, t_field, s_field);
-        matrixToVector(t_field, t, mesh);
-
-        // ----- 计算 ω = (t,s) / (t,t) -----
-        double ts_dot = t.dot(s);
-        double tt_dot = t.dot(t);
-        double global_ts_dot, global_tt_dot;
-        MPI_Allreduce(&ts_dot, &global_ts_dot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        MPI_Allreduce(&tt_dot, &global_tt_dot, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        omega = global_ts_dot / global_tt_dot;
-
-        // ----- 更新解和残差 -----
-        x += alpha * p + omega * s;
-        r = s - omega * t;
-
-        // ----- 计算新残差范数 -----
-        r_norm = r.squaredNorm();
-        MPI_Allreduce(&r_norm, &global_r_norm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        r0 = sqrt(global_r_norm);
-
-        // 更新ρ_old
-        rho_old = rho_new;
-        iter++;
+        // 保存本轮残差用于下一轮比较
+        prev_r0 = r0;
+        
+        MPI_Barrier(MPI_COMM_WORLD);
     }
 
+    // 达到最大迭代次数
+    if (rank == 0&& verbose == 1) {
+        std::cout << "  [CG] 达到最大迭代次数(" << max_iter << "), 最终残差: " 
+                  << std::scientific << std::setprecision(3) << r0 / initial_r_norm << std::endl;
+    }
+    
     MPI_Barrier(MPI_COMM_WORLD);
 }

@@ -1135,15 +1135,16 @@ void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,
  */
 void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,
                                double mu, double dt, double alpha_uv) {
-    // 大部分代码与稳态版本相同,仅在最后添加时间项
     int n_x = equ_u.n_x;
     int n_y = equ_u.n_y;
     
-    double D_e = dy * mu / dx;
-    double D_w = dy * mu / dx;
-    double D_n = dx * mu / dy;
-    double D_s = dx * mu / dy;
+    // 计算扩散系数
+    double D_e = dy * mu / dx;  // 东面扩散系数
+    double D_w = dy * mu / dx;  // 西面扩散系数
+    double D_n = dx * mu / dy;  // 北面扩散系数
+    double D_s = dx * mu / dy;  // 南面扩散系数
     
+    // 引用网格变量(简化代码)
     MatrixXd &zoneid = mesh.zoneid;
     MatrixXd &bctype = mesh.bctype;
     MatrixXd &u = mesh.u;
@@ -1163,48 +1164,184 @@ void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,
     vector<double> zoneu = mesh.zoneu;
     vector<double> zonev = mesh.zonev;
     
-    // [与稳态版本相同的循环代码,此处省略...]
-    // ... (计算对流扩散系数和压力梯度源项)
-    
+    // 遍历所有内部点
     for(int i = 0; i <= n_y+1; i++) {
         for(int j = 0; j <= n_x+1; j++) {
-            if(bctype(i,j) != 0) continue;
+            if(bctype(i,j) != 0) continue;  // 跳过边界点
             
-            int n = mesh.interid(i,j) ;
-            double F_e = dy * u_face(i,j);
-            double F_w = dy * u_face(i,j-1);
-            double F_n = dx * v_face(i-1,j);
-            double F_s = dx * v_face(i,j);
+            int n = mesh.interid(i,j) ;  // 方程编号
+            
+            // 计算各面的对流通量
+            double F_e = dy * u_face(i,j);      // 东面通量
+            double F_w = dy * u_face(i,j-1);    // 西面通量
+            double F_n = dx * v_face(i-1,j);    // 北面通量
+            double F_s = dx * v_face(i,j);      // 南面通量
             
             double Ap_temp = 0;
             double source_x_temp = 0, source_y_temp = 0;
             
-            // [与稳态版本相同的压力梯度和系数计算,此处省略...]
+            // ===== 计算压力源项 =====
+            // x方向压力梯度
+            if((bctype(i,j-1) == 0 || bctype(i,j-1) == -3) && 
+               (bctype(i,j+1) == 0 || bctype(i,j+1) == -3)) {
+                // 两侧都是内部点,使用中心差分
+                source_x_temp = 0.5  * (p(i,j-1) - p(i,j+1)) * dy;
+            } else if(bctype(i,j-1) == -1) {
+                // 左侧是压力出口(p=0)
+                source_x_temp = 0.5  * (-p(i,j+1)) * dy;
+            } else if(bctype(i,j+1) == -1) {
+                // 右侧是压力出口
+                source_x_temp = 0.5  * p(i,j-1) * dy;
+            } else if(bctype(i,j-1) == -2) {
+                // 左侧是速度入口
+                source_x_temp = 0.5  * (p(i,j) - p(i,j+1)) * dy;
+            } else if(bctype(i,j+1) == -2) {
+                // 右侧是速度入口
+                source_x_temp = 0.5  * (p(i,j-1) - p(i,j)) * dy;
+            } else if(bctype(i,j-1) != 0 && bctype(i,j+1) == 0) {
+                // 左边界,右内部
+                source_x_temp = 0.5 * (p(i,j) - p(i,j+1)) * dy;
+            } else if(bctype(i,j-1) == 0 && bctype(i,j+1) != 0) {
+                // 左内部,右边界
+                source_x_temp = 0.5 * (p(i,j-1) - p(i,j)) * dy;
+            } else {
+                source_x_temp = 0.0;
+            }
+            
+            // y方向压力梯度(类似处理)
+            if((bctype(i-1,j) == 0 || bctype(i-1,j) == -3) && 
+               (bctype(i+1,j) == 0 || bctype(i+1,j) == -3)) {
+                source_y_temp = 0.5  * (p(i+1,j) - p(i-1,j)) * dx;
+            } else if(bctype(i-1,j) == -1) {
+                source_y_temp = 0.5 * p(i+1,j) * dx;
+            } else if(bctype(i+1,j) == -1) {
+                source_y_temp = 0.5  * (-p(i-1,j)) * dx;
+            } else if(bctype(i-1,j) == -2) {
+                source_y_temp = 0.5  * (p(i+1,j) - p(i,j)) * dx;
+            } else if(bctype(i+1,j) == -2) {
+                source_y_temp = 0.5  * (p(i,j) - p(i-1,j)) * dx;
+            } else if(bctype(i-1,j) != 0 && bctype(i+1,j) == 0) {
+                source_y_temp = 0.5  * (p(i+1,j) - p(i,j)) * dx;
+            } else if(bctype(i-1,j) == 0 && bctype(i+1,j) != 0) {
+                source_y_temp = 0.5  * (p(i,j) - p(i-1,j)) * dx;
+            } else {
+                source_y_temp = 0.0;
+            }
+            
+            // ===== 计算东面系数 =====
+            if(bctype(i,j+1) == 0 || bctype(i,j+1) == -3) {
+                // 东邻是内部点或并行接口
+                A_e(i,j) = D_e + max(0.0, -F_e);  // 混合格式
+                Ap_temp += D_e + max(0.0, F_e);
+            } else if(bctype(i,j+1) > 0) {
+                // 东邻是固壁(无滑移边界)
+                A_e(i,j) = 0;
+                Ap_temp += 2*D_e + max(0.0, F_e);
+                source_x_temp += zoneu[zoneid(i,j+1)] * (2*D_e + max(0.0, -F_e));
+                source_y_temp +=  zonev[zoneid(i,j+1)] * (2*D_e + max(0.0, -F_e));
+            } else if(bctype(i,j+1) == -1) {
+                // 东邻是压力出口
+                A_e(i,j) = 0;
+                Ap_temp += D_e + max(0.0, F_e);
+                source_x_temp += u_star(i,j) * (D_e + max(0.0, -F_e));
+                source_y_temp +=  v_star(i,j) * (D_e + max(0.0, -F_e));
+            } else if(bctype(i,j+1) > -10) {
+                // 东邻是其他边界(如速度入口)
+                A_e(i,j) = 0;
+                Ap_temp += D_e + max(0.0, F_e);
+                source_x_temp +=  zoneu[zoneid(i,j+1)] * (D_e + max(0.0, -F_e));
+                source_y_temp +=  zonev[zoneid(i,j+1)] * (D_e + max(0.0, -F_e));
+            }
+            
+            // ===== 计算西面系数 =====
+            if(bctype(i,j-1) == 0 || bctype(i,j-1) == -3) {
+                A_w(i,j) = D_w + max(0.0, F_w);
+                Ap_temp += D_w + max(0.0, -F_w);
+            } else if(bctype(i,j-1) == -1) {
+                A_w(i,j) = 0;
+                Ap_temp += D_w + max(0.0, -F_w);
+                source_x_temp +=  u_star(i,j) * (D_w + max(0.0, F_w));
+                source_y_temp +=  v_star(i,j) * (D_w + max(0.0, F_w));
+            } else if(bctype(i,j-1) > 0) {
+                A_w(i,j) = 0;
+                Ap_temp += 2*D_w + max(0.0, -F_w);
+                source_x_temp +=  zoneu[zoneid(i,j-1)] * (2*D_w + max(0.0, F_w));
+                source_y_temp +=  zonev[zoneid(i,j-1)] * (2*D_w + max(0.0, F_w));
+            } else if(bctype(i,j-1) > -10) {
+                A_w(i,j) = 0;
+                Ap_temp += D_w + max(0.0, -F_w);
+                source_x_temp +=  zoneu[zoneid(i,j-1)] * (D_w + max(0.0, F_w));
+                source_y_temp +=  zonev[zoneid(i,j-1)] * (D_w + max(0.0, F_w));
+            }
+            
+            // ===== 计算北面系数 =====
+            if(bctype(i-1,j) == 0) {
+                A_n(i,j) = D_n + max(0.0, -F_n);
+                Ap_temp += D_n + max(0.0, F_n);
+            } else if(bctype(i-1,j) == -1) {
+                A_n(i,j) = 0;
+                Ap_temp += D_n + max(0.0, F_n);
+                source_x_temp +=  u_star(i-1,j) * (D_n + max(0.0, -F_n));
+                source_y_temp +=  v_star(i-1,j) * (D_n + max(0.0, -F_n));
+            } else if(bctype(i-1,j) > 0) {
+                A_n(i,j) = 0;
+                Ap_temp += 2*D_n + max(0.0, F_n);
+                source_x_temp +=  zoneu[zoneid(i-1,j)] * (2*D_n + max(0.0, -F_n));
+                source_y_temp +=  zonev[zoneid(i-1,j)] * (2*D_n + max(0.0, -F_n));
+            } else if(bctype(i-1,j) > -10) {
+                A_n(i,j) = 0;
+                Ap_temp += D_n + max(0.0, F_n);
+                source_x_temp +=  zoneu[zoneid(i-1,j)] * (D_n + max(0.0, -F_n));
+                source_y_temp +=  zonev[zoneid(i-1,j)] * (D_n + max(0.0, -F_n));
+            }
+            
+            // ===== 计算南面系数 =====
+            if(bctype(i+1,j) == 0) {
+                A_s(i,j) = D_s + max(0.0, F_s);
+                Ap_temp += D_s + max(0.0, -F_s);
+            } else if(bctype(i+1,j) == -1) {
+                A_s(i,j) = 0;
+                Ap_temp += D_s + max(0.0, -F_s);
+                source_x_temp +=  u(i+1,j) * (D_s + max(0.0, F_s));
+                source_y_temp +=  v(i+1,j) * (D_s + max(0.0, F_s));
+            } else if(bctype(i+1,j) > 0) {
+                A_s(i,j) = 0;
+                Ap_temp += 2*D_s + max(0.0, -F_s);
+                source_x_temp +=  zoneu[zoneid(i+1,j)] * (2*D_s + max(0.0, F_s));
+                source_y_temp +=  zonev[zoneid(i+1,j)] * (2*D_s + max(0.0, F_s));
+            } else if(bctype(i+1,j) > -10) {
+                A_s(i,j) = 0;
+                Ap_temp += D_s + max(0.0, -F_s);
+                source_x_temp +=  zoneu[zoneid(i+1,j)] * (D_s + max(0.0, F_s));
+                source_y_temp +=  zonev[zoneid(i+1,j)] * (D_s + max(0.0, F_s));
+            }
             
             // 关键区别: 添加时间项到中心系数
             A_p(i,j) = Ap_temp + dx*dy/dt;
             
             // 关键区别: 源项添加旧时间步项
-            source_x_temp += (1 - alpha_uv) * A_p(i,j) * u_star(i,j) 
-                           + alpha_uv * dx*dy * mesh.u0(i,j) / dt;
-            source_y_temp += (1 - alpha_uv) * A_p(i,j) * v_star(i,j) 
-                           + alpha_uv * dx*dy * mesh.v0(i,j) / dt;
+            source_x_temp +=  dx*dy * mesh.u0(i,j) / dt;
+            source_y_temp +=  dx*dy * mesh.v0(i,j) / dt;
             
+            // 设置源项
             source_x[n] = source_x_temp;
             source_y[n] = source_y_temp;
         }
     }
 
-    A_e = alpha_uv * A_e;
-    A_w = alpha_uv * A_w;
-    A_n = alpha_uv * A_n;
-    A_s = alpha_uv * A_s;
+    // 应用松弛因子到邻接系数
+    A_e = A_e;
+    A_w = A_w;
+    A_n = A_n;
+    A_s = A_s;
     
+    // 复制系数到y方向动量方程
     equ_v.A_p = equ_u.A_p;
     equ_v.A_w = equ_u.A_w;
     equ_v.A_e = equ_u.A_e;
     equ_v.A_n = equ_u.A_n;
     equ_v.A_s = equ_u.A_s;
+   
 }
 
 // ============================================================================
@@ -1224,8 +1361,212 @@ void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,
  */
 void momentum_function_PISO(Mesh &mesh, Equation &equ_u, Equation &equ_v,
                             double mu, double dt) {
-    // 与非稳态SIMPLE类似,但alpha_uv=1.0
-    // [代码结构与momentum_function_unsteady相同,此处省略详细实现]
+    int n_x = equ_u.n_x;
+    int n_y = equ_u.n_y;
+    
+    // 计算扩散系数
+    double D_e = dy * mu / dx;  // 东面扩散系数
+    double D_w = dy * mu / dx;  // 西面扩散系数
+    double D_n = dx * mu / dy;  // 北面扩散系数
+    double D_s = dx * mu / dy;  // 南面扩散系数
+    
+    // 引用网格变量(简化代码)
+    MatrixXd &zoneid = mesh.zoneid;
+    MatrixXd &bctype = mesh.bctype;
+    MatrixXd &u = mesh.u;
+    MatrixXd &v = mesh.v;
+    MatrixXd &u_face = mesh.u_face;
+    MatrixXd &v_face = mesh.v_face;
+    MatrixXd &p = mesh.p;
+    MatrixXd &u_star = mesh.u_star;
+    MatrixXd &v_star = mesh.v_star;
+    MatrixXd &A_p = equ_u.A_p;
+    MatrixXd &A_e = equ_u.A_e;
+    MatrixXd &A_w = equ_u.A_w;
+    MatrixXd &A_n = equ_u.A_n;
+    MatrixXd &A_s = equ_u.A_s;
+    VectorXd &source_x = equ_u.source;
+    VectorXd &source_y = equ_v.source;
+    vector<double> zoneu = mesh.zoneu;
+    vector<double> zonev = mesh.zonev;
+    
+    // 遍历所有内部点
+    for(int i = 0; i <= n_y+1; i++) {
+        for(int j = 0; j <= n_x+1; j++) {
+            if(bctype(i,j) != 0) continue;  // 跳过边界点
+            
+            int n = mesh.interid(i,j) ;  // 方程编号
+            
+            // 计算各面的对流通量
+            double F_e = dy * u_face(i,j);      // 东面通量
+            double F_w = dy * u_face(i,j-1);    // 西面通量
+            double F_n = dx * v_face(i-1,j);    // 北面通量
+            double F_s = dx * v_face(i,j);      // 南面通量
+            
+            double Ap_temp = 0;
+            double source_x_temp = 0, source_y_temp = 0;
+            
+            // ===== 计算压力源项 =====
+            // x方向压力梯度
+            if((bctype(i,j-1) == 0 || bctype(i,j-1) == -3) && 
+               (bctype(i,j+1) == 0 || bctype(i,j+1) == -3)) {
+                // 两侧都是内部点,使用中心差分
+                source_x_temp = 0.5  * (p(i,j-1) - p(i,j+1)) * dy;
+            } else if(bctype(i,j-1) == -1) {
+                // 左侧是压力出口(p=0)
+                source_x_temp = 0.5  * (-p(i,j+1)) * dy;
+            } else if(bctype(i,j+1) == -1) {
+                // 右侧是压力出口
+                source_x_temp = 0.5  * p(i,j-1) * dy;
+            } else if(bctype(i,j-1) == -2) {
+                // 左侧是速度入口
+                source_x_temp = 0.5  * (p(i,j) - p(i,j+1)) * dy;
+            } else if(bctype(i,j+1) == -2) {
+                // 右侧是速度入口
+                source_x_temp = 0.5  * (p(i,j-1) - p(i,j)) * dy;
+            } else if(bctype(i,j-1) != 0 && bctype(i,j+1) == 0) {
+                // 左边界,右内部
+                source_x_temp = 0.5 * (p(i,j) - p(i,j+1)) * dy;
+            } else if(bctype(i,j-1) == 0 && bctype(i,j+1) != 0) {
+                // 左内部,右边界
+                source_x_temp = 0.5 * (p(i,j-1) - p(i,j)) * dy;
+            } else {
+                source_x_temp = 0.0;
+            }
+            
+            // y方向压力梯度(类似处理)
+            if((bctype(i-1,j) == 0 || bctype(i-1,j) == -3) && 
+               (bctype(i+1,j) == 0 || bctype(i+1,j) == -3)) {
+                source_y_temp = 0.5  * (p(i+1,j) - p(i-1,j)) * dx;
+            } else if(bctype(i-1,j) == -1) {
+                source_y_temp = 0.5 * p(i+1,j) * dx;
+            } else if(bctype(i+1,j) == -1) {
+                source_y_temp = 0.5  * (-p(i-1,j)) * dx;
+            } else if(bctype(i-1,j) == -2) {
+                source_y_temp = 0.5  * (p(i+1,j) - p(i,j)) * dx;
+            } else if(bctype(i+1,j) == -2) {
+                source_y_temp = 0.5  * (p(i,j) - p(i-1,j)) * dx;
+            } else if(bctype(i-1,j) != 0 && bctype(i+1,j) == 0) {
+                source_y_temp = 0.5  * (p(i+1,j) - p(i,j)) * dx;
+            } else if(bctype(i-1,j) == 0 && bctype(i+1,j) != 0) {
+                source_y_temp = 0.5  * (p(i,j) - p(i-1,j)) * dx;
+            } else {
+                source_y_temp = 0.0;
+            }
+            
+            // ===== 计算东面系数 =====
+            if(bctype(i,j+1) == 0 || bctype(i,j+1) == -3) {
+                // 东邻是内部点或并行接口
+                A_e(i,j) = D_e + max(0.0, -F_e);  // 混合格式
+                Ap_temp += D_e + max(0.0, F_e);
+            } else if(bctype(i,j+1) > 0) {
+                // 东邻是固壁(无滑移边界)
+                A_e(i,j) = 0;
+                Ap_temp += 2*D_e + max(0.0, F_e);
+                source_x_temp += zoneu[zoneid(i,j+1)] * (2*D_e + max(0.0, -F_e));
+                source_y_temp +=  zonev[zoneid(i,j+1)] * (2*D_e + max(0.0, -F_e));
+            } else if(bctype(i,j+1) == -1) {
+                // 东邻是压力出口
+                A_e(i,j) = 0;
+                Ap_temp += D_e + max(0.0, F_e);
+                source_x_temp += u_star(i,j) * (D_e + max(0.0, -F_e));
+                source_y_temp +=  v_star(i,j) * (D_e + max(0.0, -F_e));
+            } else if(bctype(i,j+1) > -10) {
+                // 东邻是其他边界(如速度入口)
+                A_e(i,j) = 0;
+                Ap_temp += D_e + max(0.0, F_e);
+                source_x_temp +=  zoneu[zoneid(i,j+1)] * (D_e + max(0.0, -F_e));
+                source_y_temp +=  zonev[zoneid(i,j+1)] * (D_e + max(0.0, -F_e));
+            }
+            
+            // ===== 计算西面系数 =====
+            if(bctype(i,j-1) == 0 || bctype(i,j-1) == -3) {
+                A_w(i,j) = D_w + max(0.0, F_w);
+                Ap_temp += D_w + max(0.0, -F_w);
+            } else if(bctype(i,j-1) == -1) {
+                A_w(i,j) = 0;
+                Ap_temp += D_w + max(0.0, -F_w);
+                source_x_temp +=  u_star(i,j) * (D_w + max(0.0, F_w));
+                source_y_temp +=  v_star(i,j) * (D_w + max(0.0, F_w));
+            } else if(bctype(i,j-1) > 0) {
+                A_w(i,j) = 0;
+                Ap_temp += 2*D_w + max(0.0, -F_w);
+                source_x_temp +=  zoneu[zoneid(i,j-1)] * (2*D_w + max(0.0, F_w));
+                source_y_temp +=  zonev[zoneid(i,j-1)] * (2*D_w + max(0.0, F_w));
+            } else if(bctype(i,j-1) > -10) {
+                A_w(i,j) = 0;
+                Ap_temp += D_w + max(0.0, -F_w);
+                source_x_temp +=  zoneu[zoneid(i,j-1)] * (D_w + max(0.0, F_w));
+                source_y_temp +=  zonev[zoneid(i,j-1)] * (D_w + max(0.0, F_w));
+            }
+            
+            // ===== 计算北面系数 =====
+            if(bctype(i-1,j) == 0) {
+                A_n(i,j) = D_n + max(0.0, -F_n);
+                Ap_temp += D_n + max(0.0, F_n);
+            } else if(bctype(i-1,j) == -1) {
+                A_n(i,j) = 0;
+                Ap_temp += D_n + max(0.0, F_n);
+                source_x_temp +=  u_star(i-1,j) * (D_n + max(0.0, -F_n));
+                source_y_temp +=  v_star(i-1,j) * (D_n + max(0.0, -F_n));
+            } else if(bctype(i-1,j) > 0) {
+                A_n(i,j) = 0;
+                Ap_temp += 2*D_n + max(0.0, F_n);
+                source_x_temp +=  zoneu[zoneid(i-1,j)] * (2*D_n + max(0.0, -F_n));
+                source_y_temp +=  zonev[zoneid(i-1,j)] * (2*D_n + max(0.0, -F_n));
+            } else if(bctype(i-1,j) > -10) {
+                A_n(i,j) = 0;
+                Ap_temp += D_n + max(0.0, F_n);
+                source_x_temp +=  zoneu[zoneid(i-1,j)] * (D_n + max(0.0, -F_n));
+                source_y_temp +=  zonev[zoneid(i-1,j)] * (D_n + max(0.0, -F_n));
+            }
+            
+            // ===== 计算南面系数 =====
+            if(bctype(i+1,j) == 0) {
+                A_s(i,j) = D_s + max(0.0, F_s);
+                Ap_temp += D_s + max(0.0, -F_s);
+            } else if(bctype(i+1,j) == -1) {
+                A_s(i,j) = 0;
+                Ap_temp += D_s + max(0.0, -F_s);
+                source_x_temp +=  u(i+1,j) * (D_s + max(0.0, F_s));
+                source_y_temp +=  v(i+1,j) * (D_s + max(0.0, F_s));
+            } else if(bctype(i+1,j) > 0) {
+                A_s(i,j) = 0;
+                Ap_temp += 2*D_s + max(0.0, -F_s);
+                source_x_temp +=  zoneu[zoneid(i+1,j)] * (2*D_s + max(0.0, F_s));
+                source_y_temp +=  zonev[zoneid(i+1,j)] * (2*D_s + max(0.0, F_s));
+            } else if(bctype(i+1,j) > -10) {
+                A_s(i,j) = 0;
+                Ap_temp += D_s + max(0.0, -F_s);
+                source_x_temp +=  zoneu[zoneid(i+1,j)] * (D_s + max(0.0, F_s));
+                source_y_temp +=  zonev[zoneid(i+1,j)] * (D_s + max(0.0, F_s));
+            }
+            
+            // 关键区别: 添加时间项到中心系数
+            A_p(i,j) = Ap_temp + dx*dy/dt;
+            
+            // 关键区别: 源项添加旧时间步项
+            source_x_temp +=  dx*dy * mesh.u0(i,j) / dt;
+            source_y_temp +=  dx*dy * mesh.v0(i,j) / dt;
+            
+            // 设置源项
+            source_x[n] = source_x_temp;
+            source_y[n] = source_y_temp;
+        }
+    }
+
+    // 应用松弛因子到邻接系数
+    A_e =  A_e;
+    A_w =  A_w;
+    A_n =  A_n;
+    A_s =  A_s;
+    
+    // 复制系数到y方向动量方程
+    equ_v.A_p = equ_u.A_p;
+    equ_v.A_w = equ_u.A_w;
+    equ_v.A_e = equ_u.A_e;
+    equ_v.A_n = equ_u.A_n;
+    equ_v.A_s = equ_u.A_s;
 }
 
 // ============================================================================
@@ -1499,19 +1840,314 @@ void saveforecastData(
         fs::path step_dir = fs::path(ss.str()) / std::to_string(timestep);
         fs::create_directories(step_dir); // MPI-safe 幂等
 
-        auto dump = [&](const std::string& name, const auto& field) {
+        auto write = [&](const std::string& name, const auto& field) {
             fs::path p = step_dir / (name + "_" + std::to_string(rank) + ".dat");
             std::ofstream f(p);
             if (!f) throw std::runtime_error(p.string());
             f << field;
         };
 
-        dump("up", mesh.u_face);
-        dump("vp", mesh.v_face);
-        dump("pp", mesh.p_prime);
+        write("up", mesh.u_face);
+        write("vp", mesh.v_face);
+        write("p" , mesh.p);
+        write("pp", mesh.p_prime);
 
     } catch (const std::exception& e) {
         std::cerr << "[Rank " << rank << "] IO失败: " << e.what() << std::endl;
         throw;
     }
+}
+
+// ==================== 辅助函数实现 ====================
+
+void parseInputParameters(int argc, char* argv[], std::string& mesh_folder, 
+                         int& timesteps, double& mu, int& n_splits) 
+{
+    if (argc == 5) {
+        mesh_folder = argv[1];
+        timesteps = std::stoi(argv[2]);
+        mu = std::stod(argv[3]);
+        n_splits = std::stoi(argv[4]);
+        
+        std::cout << "==================== 参数设置 ====================" << std::endl;
+        std::cout << "网格文件夹: " << mesh_folder << std::endl;
+        std::cout << "时间步数: " << timesteps << std::endl;
+        std::cout << "粘度系数: " << mu << std::endl;
+        std::cout << "并行线程数: " << n_splits << std::endl;
+        std::cout << "==================================================\n" << std::endl;
+    } else {
+        std::cout << "==================== 参数输入 ====================" << std::endl;
+        std::cout << "网格文件夹路径: ";
+        std::cin >> mesh_folder;
+        std::cout << "时间步数: ";
+        std::cin >> timesteps;
+        std::cout << "粘度系数: ";
+        std::cin >> mu;
+        std::cout << "并行线程数: ";
+        std::cin >> n_splits;
+        std::cout << "==================================================\n" << std::endl;
+    }
+}
+
+void broadcastParameters(std::string& mesh_folder, double& dt, int& timesteps, 
+                        double& mu, int& n_splits, int rank) 
+{
+    // 同步字符串
+    int folder_length;
+    if (rank == 0) folder_length = mesh_folder.size();
+    MPI_Bcast(&folder_length, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    
+    char* folder_cstr = new char[folder_length + 1];
+    if (rank == 0) strcpy(folder_cstr, mesh_folder.c_str());
+    MPI_Bcast(folder_cstr, folder_length + 1, MPI_CHAR, 0, MPI_COMM_WORLD);
+    if (rank != 0) mesh_folder = std::string(folder_cstr);
+    delete[] folder_cstr;
+    
+    // 广播数值参数
+    MPI_Bcast(&dt, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&timesteps, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&mu, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&n_splits, 1, MPI_INT, 0, MPI_COMM_WORLD);
+}
+
+void verifyParameterConsistency(const std::string& mesh_folder, double dt, 
+                               int timesteps, double mu, int n_splits, 
+                               int rank, int num_procs) 
+{
+    // 检查浮点变量一致性
+    double local_vals[4] = {dx, dy, dt, mu};
+    double global_max[4], global_min[4];
+    MPI_Allreduce(local_vals, global_max, 4, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(local_vals, global_min, 4, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+    
+    // 检查整型变量一致性
+    int local_ints[2] = {timesteps, n_splits};
+    int global_int_max[2], global_int_min[2];
+    MPI_Allreduce(local_ints, global_int_max, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(local_ints, global_int_min, 2, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    
+    // 检查字符串一致性
+    int folder_length = mesh_folder.size();
+    char* local_str = new char[folder_length + 1];
+    strcpy(local_str, mesh_folder.c_str());
+    
+    char* all_strings = new char[(folder_length + 1) * num_procs];
+    MPI_Allgather(local_str, folder_length + 1, MPI_CHAR,
+                  all_strings, folder_length + 1, MPI_CHAR, MPI_COMM_WORLD);
+    
+    int folder_match = 1;
+    for (int i = 0; i < num_procs; ++i) {
+        if (strcmp(local_str, &all_strings[i * (folder_length + 1)]) != 0) {
+            folder_match = 0;
+            break;
+        }
+    }
+    
+    int global_folder_match;
+    MPI_Allreduce(&folder_match, &global_folder_match, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    
+    // 仅rank 0打印验证结果
+    if (rank == 0) {
+        bool float_consistent = true;
+        for (int i = 0; i < 4; ++i) {
+            if (fabs(global_max[i] - global_min[i]) > 1e-12) {
+                float_consistent = false;
+            }
+        }
+        
+        bool int_consistent = (global_int_max[0] == global_int_min[0]) && 
+                             (global_int_max[1] == global_int_min[1]);
+        
+        if (!float_consistent || !int_consistent || global_folder_match == 0) {
+            std::cerr << "\n✗ MPI参数同步失败!" << std::endl;
+            if (!float_consistent) 
+                std::cerr << "  → 浮点参数不一致 (dx/dy/dt/mu)" << std::endl;
+            if (!int_consistent) 
+                std::cerr << "  → 整型参数不一致 (timesteps/n_splits)" << std::endl;
+            if (global_folder_match == 0) 
+                std::cerr << "  → 路径字符串不一致" << std::endl;
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        } else {
+            std::cout << "==================== 参数同步验证 ====================" << std::endl;
+            std::cout << "✓ 所有进程参数同步成功" << std::endl;
+            std::cout << "  dx = " << dx << ", dy = " << dy << std::endl;
+            std::cout << "  dt = " << dt << ", mu = " << mu << std::endl;
+            std::cout << "  timesteps = " << timesteps << ", n_splits = " << n_splits << std::endl;
+            std::cout << "  mesh_folder = " << mesh_folder << std::endl;
+            std::cout << "======================================================\n" << std::endl;
+        }
+    }
+    
+    delete[] local_str;
+    delete[] all_strings;
+}
+
+void printSimulationSetup(const std::vector<Mesh>& sub_meshes, int n_splits, int rank) 
+{
+    std::cout << "==================== 网格分割信息 ====================" << std::endl;
+    std::cout << "总分割数: " << n_splits << " 个子网格" << std::endl;
+    for (int i = 0; i < sub_meshes.size(); i++) {
+        std::cout << "  子网格 " << i << " 尺寸: " 
+                  << sub_meshes[i].nx << " × " << sub_meshes[i].ny << std::endl;
+    }
+    std::cout << "======================================================\n" << std::endl;
+}
+
+bool checkConvergence(double norm_res_x, double norm_res_y, double norm_res_p) 
+{
+    const double tol_uv = 1e-15;  // 速度收敛容差
+    const double tol_p = 1e-11;   // 压力收敛容差
+    
+    return (norm_res_x < tol_uv) && (norm_res_y < tol_uv) && (norm_res_p < tol_p);
+}
+
+// -------------------- 参数解析(非定常版本) --------------------
+void parseInputParameters_unsteady(int argc, char* argv[], std::string& mesh_folder, 
+                                   double& dt, int& timesteps, double& mu, int& n_splits) 
+{
+    if (argc == 6) {
+        // 命令行参数: mesh_folder dt timesteps mu n_splits
+        mesh_folder = argv[1];
+        dt = std::stod(argv[2]);
+        timesteps = std::stoi(argv[3]);
+        mu = std::stod(argv[4]);
+        n_splits = std::stoi(argv[5]);
+        
+        std::cout << "==================== 参数设置 ====================" << std::endl;
+        std::cout << "计算模式: 非定常 (Unsteady)" << std::endl;
+        std::cout << "网格文件夹: " << mesh_folder << std::endl;
+        std::cout << "时间步长 dt: " << dt << std::endl;
+        std::cout << "时间步数: " << timesteps << std::endl;
+        std::cout << "粘度系数 μ: " << mu << std::endl;
+        std::cout << "并行线程数: " << n_splits << std::endl;
+        std::cout << "==================================================\n" << std::endl;
+    } else {
+        // 交互式输入
+        std::cout << "==================== 参数输入 ====================" << std::endl;
+        std::cout << "计算模式: 非定常 (Unsteady)" << std::endl;
+        std::cout << "网格文件夹路径: ";
+        std::cin >> mesh_folder;
+        std::cout << "时间步长 dt: ";
+        std::cin >> dt;
+        std::cout << "时间步数: ";
+        std::cin >> timesteps;
+        std::cout << "粘度系数 μ: ";
+        std::cin >> mu;
+        std::cout << "并行线程数: ";
+        std::cin >> n_splits;
+        std::cout << "==================================================\n" << std::endl;
+    }
+}
+
+// -------------------- 参数广播(非定常版本) --------------------
+void broadcastParameters_unsteady(std::string& mesh_folder, double& dt, int& timesteps, 
+                                  double& mu, int& n_splits, int rank) 
+{
+    // 同步字符串长度和内容
+    int folder_length;
+    if (rank == 0) folder_length = mesh_folder.size();
+    MPI_Bcast(&folder_length, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    
+    char* folder_cstr = new char[folder_length + 1];
+    if (rank == 0) strcpy(folder_cstr, mesh_folder.c_str());
+    MPI_Bcast(folder_cstr, folder_length + 1, MPI_CHAR, 0, MPI_COMM_WORLD);
+    if (rank != 0) mesh_folder = std::string(folder_cstr);
+    delete[] folder_cstr;
+    
+    // 广播数值参数
+    MPI_Bcast(&dt, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&timesteps, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&mu, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&n_splits, 1, MPI_INT, 0, MPI_COMM_WORLD);
+}
+
+// -------------------- 参数一致性验证(非定常版本) --------------------
+void verifyParameterConsistency_unsteady(const std::string& mesh_folder, double dt, 
+                                         int timesteps, double mu, int n_splits, 
+                                         int rank, int num_procs) 
+{
+    // 检查浮点变量一致性 (dx, dy, dt, mu)
+    double local_vals[4] = {dx, dy, dt, mu};
+    double global_max[4], global_min[4];
+    MPI_Allreduce(local_vals, global_max, 4, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(local_vals, global_min, 4, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+    
+    // 检查整型变量一致性 (timesteps, n_splits)
+    int local_ints[2] = {timesteps, n_splits};
+    int global_int_max[2], global_int_min[2];
+    MPI_Allreduce(local_ints, global_int_max, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(local_ints, global_int_min, 2, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    
+    // 检查字符串一致性
+    int folder_length = mesh_folder.size();
+    char* local_str = new char[folder_length + 1];
+    strcpy(local_str, mesh_folder.c_str());
+    
+    char* all_strings = new char[(folder_length + 1) * num_procs];
+    MPI_Allgather(local_str, folder_length + 1, MPI_CHAR,
+                  all_strings, folder_length + 1, MPI_CHAR, MPI_COMM_WORLD);
+    
+    int folder_match = 1;
+    for (int i = 0; i < num_procs; ++i) {
+        if (strcmp(local_str, &all_strings[i * (folder_length + 1)]) != 0) {
+            folder_match = 0;
+            break;
+        }
+    }
+    
+    int global_folder_match;
+    MPI_Allreduce(&folder_match, &global_folder_match, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    
+    // 仅rank 0打印验证结果
+    if (rank == 0) {
+        bool float_consistent = true;
+        for (int i = 0; i < 4; ++i) {
+            if (fabs(global_max[i] - global_min[i]) > 1e-12) {
+                float_consistent = false;
+            }
+        }
+        
+        bool int_consistent = (global_int_max[0] == global_int_min[0]) && 
+                             (global_int_max[1] == global_int_min[1]);
+        
+        if (!float_consistent || !int_consistent || global_folder_match == 0) {
+            std::cerr << "\n✗ MPI参数同步失败!" << std::endl;
+            if (!float_consistent) 
+                std::cerr << "  → 浮点参数不一致 (dx/dy/dt/mu)" << std::endl;
+            if (!int_consistent) 
+                std::cerr << "  → 整型参数不一致 (timesteps/n_splits)" << std::endl;
+            if (global_folder_match == 0) 
+                std::cerr << "  → 路径字符串不一致" << std::endl;
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        } else {
+            std::cout << "==================== 参数同步验证 ====================" << std::endl;
+            std::cout << "✓ 所有进程参数同步成功" << std::endl;
+            std::cout << "  dx = " << dx << ", dy = " << dy << std::endl;
+            std::cout << "  dt = " << dt << ", μ = " << mu << std::endl;
+            std::cout << "  timesteps = " << timesteps << ", n_splits = " << n_splits << std::endl;
+            std::cout << "  mesh_folder = " << mesh_folder << std::endl;
+            std::cout << "======================================================\n" << std::endl;
+        }
+    }
+    
+    delete[] local_str;
+    delete[] all_strings;
+}
+
+// -------------------- 打印模拟设置(非定常版本) --------------------
+void printSimulationSetup_unsteady(const std::vector<Mesh>& sub_meshes, int n_splits, 
+                                   double dt, int timesteps, int rank) 
+{
+    std::cout << "==================== 网格分割信息 ====================" << std::endl;
+    std::cout << "总分割数: " << n_splits << " 个子网格" << std::endl;
+    for (int i = 0; i < sub_meshes.size(); i++) {
+        std::cout << "  子网格 " << i << " 尺寸: " 
+                  << sub_meshes[i].nx << " × " << sub_meshes[i].ny << std::endl;
+    }
+    std::cout << "------------------------------------------------------" << std::endl;
+    std::cout << "时间离散信息:" << std::endl;
+    std::cout << "  时间步长 dt: " << dt << std::endl;
+    std::cout << "  总时间步数: " << timesteps + 1 << " (0 → " << timesteps << ")" << std::endl;
+    std::cout << "  总模拟时间: " << dt * timesteps << std::endl;
+    std::cout << "======================================================\n" << std::endl;
 }

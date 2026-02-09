@@ -389,79 +389,13 @@ void Parallel_correction2(Mesh mesh, Equation equ, MatrixXd &phi1, MatrixXd &phi
  * @post r0为最终残差范数||r||
  * @warning 所有进程必须同时调用此函数
  */
-void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsilon, 
-                 int max_iter, int rank, int num_procs, double& r0);
+void CG_parallel(Equation& equ, Mesh mesh,
+                 VectorXd& b, VectorXd& x,
+                 double epsilon, int max_iter,
+                 int rank, int num_procs,
+                 double& r0,
+                 int verbose = 0);   // 新增：0不打印，1打印
 
-/**
- * @brief 并行双共轭梯度稳定法(BiCGSTAB)求解线性方程组 Ax = b
- * @param equ 方程对象(包含系数矩阵A)
- * @param mesh 网格对象(用于并行通信)
- * @param b 右端项向量
- * @param x 解向量(输入初值,输出解)
- * @param epsilon 收敛容差(相对残差)
- * @param max_iter 最大迭代次数
- * @param rank 当前进程号
- * @param num_procs 总进程数
- * @param r0 输出最终残差范数
- * @details
- * 算法: 双共轭梯度稳定法(Biconjugate Gradient Stabilized)
- * 适用: 非对称矩阵
- * 
- * 标准BiCGSTAB算法:
- * ```
- * r = b - A*x,  r_tld = r,  p = r
- * ρ_old = 1,  α = 1,  ω = 1
- * while ||r|| > ε:
- *     ρ_new = (r_tld, r)
- *     β = (ρ_new/ρ_old) * (α/ω)
- *     p = r + β*(p - ω*v)
- *     v = A*p
- *     α = ρ_new / (r_tld, v)
- *     s = r - α*v
- *     t = A*s
- *     ω = (t,s) / (t,t)
- *     x = x + α*p + ω*s
- *     r = s - ω*t
- *     ρ_old = ρ_new
- * ```
- * 
- * 与CG的对比:
- * | 特性          | CG           | BiCGSTAB     |
- * |---------------|--------------|--------------|
- * | 适用矩阵      | 对称正定     | 非对称       |
- * | 收敛速度      | 中等         | 较快         |
- * | 每步矩阵乘    | 1次          | 2次          |
- * | 每步全局规约  | 2次          | 4次          |
- * | 存储开销      | 小           | 中等         |
- * 
- * 并行实现关键点:
- * 1. **两次矩阵向量乘**: v=A*p 和 t=A*s
- * 2. **多次全局规约**:
- *    - (r_tld, v)
- *    - (t, s)
- *    - (t, t)
- *    - ||r||²
- * 
- * 性能分析(每次迭代):
- * - 矩阵向量乘: 2次
- * - 边界交换: 2次(exchangeColumns)
- * - 全局规约: 4次(MPI_Allreduce)
- * - 同步点: 5-6次(MPI_Barrier)
- * 
- * 收敛性:
- * - 通常比CG快1.5-3倍
- * - 可能出现停滞现象(需要预条件)
- * 
- * @note 矩阵A可以是非对称的
- * @note 每次迭代计算量约为CG的2倍
- * @note 适合难收敛的问题
- * @post x被更新为方程的近似解
- * @post r0为最终残差范数||r||
- * @warning 所有进程必须同时调用此函数
- */
-void BiCGSTAB_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsilon,
-                       int max_iter, int rank, int num_procs, double& r0);
 
-/** @} */ // end of ParallelSolvers
 
 #endif // PARALLEL_H
