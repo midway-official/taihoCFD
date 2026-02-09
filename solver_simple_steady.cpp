@@ -82,11 +82,11 @@ int main(int argc, char* argv[])
     // -------------------- 求解参数设置 --------------------
     const double alpha_p = 0.1;   // 压力松弛因子
     const double alpha_uv = 0.3;  // 动量松弛因子
-    const double tol_uv = 1e-5;   // 速度求解精度
-    const double tol_p = 1e-5;    // 压力求解精度
+    const double tol_uv = 1e-7;   // 速度求解精度
+    const double tol_p = 1e-7;    // 压力求解精度
     const int max_iter_uv = 25;   // 速度最大迭代次数
     const int max_iter_p = 200;   // 压力最大迭代次数
-    const double stagnation_tol = 1e-3;   // 0.1% 停滞阈值
+    const double stagnation_tol = 1e-4;   // 0.01% 停滞阈值
 
     
     double prev_l2_u = -1.0;
@@ -107,7 +107,7 @@ int main(int argc, char* argv[])
         mesh.v.setZero();
         equ_u.initializeToZero();
         equ_v.initializeToZero();
-        
+        MPI_Barrier(MPI_COMM_WORLD);
         // 离散动量方程
         momentum_function(mesh, equ_u, equ_v, mu, alpha_uv);
         equ_u.build_matrix();
@@ -119,15 +119,16 @@ int main(int argc, char* argv[])
         y_v.setZero();
         
         double l2_norm_x, l2_norm_y, l2_norm_p;
-        
+        MPI_Barrier(MPI_COMM_WORLD);
         CG_parallel(equ_u, mesh, equ_u.source, x_v, tol_uv, max_iter_uv, 
                     rank, num_procs, l2_norm_x);
+        MPI_Barrier(MPI_COMM_WORLD);            
         CG_parallel(equ_v, mesh, equ_v.source, y_v, tol_uv, max_iter_uv, 
                     rank, num_procs, l2_norm_y);
-        
+        MPI_Barrier(MPI_COMM_WORLD);
         vectorToMatrix(x_v, mesh.u, mesh);
         vectorToMatrix(y_v, mesh.v, mesh);
-        
+        MPI_Barrier(MPI_COMM_WORLD);
         // 交换边界数据
         exchangeColumns(mesh.u, rank, num_procs);
         exchangeColumns(mesh.v, rank, num_procs);
@@ -165,9 +166,9 @@ int main(int argc, char* argv[])
         // 更新压力场
         mesh.p = mesh.p_star;
         
-        MPI_Barrier(MPI_COMM_WORLD);
+   
         exchangeColumns(mesh.p, rank, num_procs);
-        MPI_Barrier(MPI_COMM_WORLD);
+
         
         // -------------------- 步骤5: 收敛性检查 --------------------
  
@@ -230,10 +231,12 @@ int main(int argc, char* argv[])
         if (n % 5 == 0) {
             saveMeshData(mesh, rank);
         }
-        
         if (n % 20 == 0) {
             saveforecastData(mesh, rank, n, mu);
         }
+        
+            
+        
         
         MPI_Barrier(MPI_COMM_WORLD);
     }

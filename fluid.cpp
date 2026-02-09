@@ -1,53 +1,17 @@
-/**
- * @file dns.cpp
- * @brief 基于有限体积法的不可压缩流体直接数值模拟(DNS)求解器
- * @details 使用SIMPLE/PISO算法求解二维不可压缩Navier-Stokes方程
- * 
- * 主要功能:
- * - 网格管理与边界条件处理
- * - 动量方程离散化(对流-扩散项)
- * - 压力修正方程求解
- * - 速度-压力耦合(SIMPLE/PISO算法)
- * - 稳态/非稳态求解
- * - 并行计算支持(区域分解)
- */
-
+// dns.cpp
 #include "fluid.h"
 #include <filesystem>
-#include <iomanip>
-#include <sstream>
 #include "parallel.h"
-
 namespace fs = std::filesystem;
-
-// ============================================================================
 // 全局变量定义
-// ============================================================================
 
-double dx;              ///< 网格x方向步长
-double dy;              ///< 网格y方向步长
-double vx;              ///< x方向速度(临时变量)
-double velocity;        ///< 速度幅值(临时变量)
-
-// 残差范数
-double l2_norm_x = 0.0; ///< x方向动量方程L2范数
-double l2_norm_y = 0.0; ///< y方向动量方程L2范数
-double l2_norm_p = 0.0; ///< 压力修正方程L2范数
-
-double a, b;            ///< 通用临时变量
-
-// ============================================================================
-// 工具函数
-// ============================================================================
-
-/**
- * @brief 打印矩阵到控制台(用于调试)
- * @param matrix 要打印的Eigen矩阵
- * @param name 矩阵名称
- * @param precision 输出精度(小数位数)
- */
-void printMatrix(const MatrixXd& matrix, const string& name, int precision) {
-    // 设置输出格式: 精度、无填充、逗号分隔、每行换行
+double dx, dy, vx;
+double velocity;
+double l2_norm_x = 0.0, l2_norm_y = 0.0, l2_norm_p = 0.0;
+double a, b;
+ 
+void printMatrix(const MatrixXd& matrix, const string& name, int precision ) {
+    // 设置输出格式
     IOFormat fmt(precision, 0, ", ", "\n", "[", "]");
     
     // 打印矩阵名称和尺寸
@@ -60,38 +24,14 @@ void printMatrix(const MatrixXd& matrix, const string& name, int precision) {
     // 打印分隔线
     cout << string(40, '=') << endl;
 }
-
-// ============================================================================
-// Mesh类实现 - 网格数据结构
-// ============================================================================
-
-/**
- * @brief 构造函数 - 初始化网格矩阵
- * @param n_y y方向内部网格数
- * @param n_x x方向内部网格数
- * @note 所有矩阵尺寸为(n_y+2, n_x+2),包含虚拟边界层
- */
+// Mesh 类的构造函数
 Mesh::Mesh(int n_y, int n_x)
-    : u(n_y + 2, n_x + 2),        ///< x方向速度(单元中心)
-      u_star(n_y + 2, n_x + 2),   ///< x方向修正后速度
-      u0(n_y + 2, n_x + 2),       ///< x方向上一时间步速度
-      v(n_y + 2, n_x + 2),        ///< y方向速度(单元中心)
-      v_star(n_y + 2, n_x + 2),   ///< y方向修正后速度
-      v0(n_y + 2, n_x + 2),       ///< y方向上一时间步速度
-      p(n_y + 2, n_x + 2),        ///< 压力场
-      p_star(n_y + 2, n_x + 2),   ///< 修正后压力场
-      p_prime(n_y + 2, n_x + 2),  ///< 压力修正量
-      u_face(n_y + 2, n_x + 1),   ///< 垂直面上的x方向速度
-      v_face(n_y + 1, n_x + 2),   ///< 水平面上的y方向速度
-      bctype(n_y + 2, n_x + 2),   ///< 边界类型标记
-      zoneid(n_y + 2, n_x + 2),   ///< 区域ID
-      interid(n_y + 2, n_x + 2),  ///< 内部点编号
-      nx(n_x), 
-      ny(n_y) {}
+    : u(n_y + 2, n_x + 2), u_star(n_y + 2, n_x + 2),u0(n_y + 2, n_x + 2),
+      v(n_y + 2, n_x + 2), v_star(n_y + 2, n_x + 2),v0(n_y + 2, n_x + 2), 
+      p(n_y + 2, n_x + 2), p_star(n_y + 2, n_x + 2), p_prime(n_y + 2, n_x + 2),
+      u_face(n_y + 2, n_x + 1), v_face(n_y + 1, n_x + 2),bctype(n_y + 2, n_x + 2),zoneid(n_y + 2, n_x + 2) ,interid(n_y + 2, n_x + 2),nx(n_x), ny(n_y){}
 
-/**
- * @brief 初始化所有矩阵为零
- */
+// 初始化所有矩阵为零
 void Mesh::initializeToZero() {
     u.setZero();
     u_star.setZero();
@@ -107,20 +47,15 @@ void Mesh::initializeToZero() {
     bctype.setZero();
     zoneid.setZero();
     interid.setZero();
+   
 }
 
-/**
- * @brief 显示单个矩阵内容(调试用)
- * @param matrix 矩阵引用
- * @param name 矩阵名称
- */
+// 显示矩阵内容
 void Mesh::displayMatrix(const MatrixXd& matrix, const string& name) const {
     cout << name << ":\n" << matrix << "\n";
 }
 
-/**
- * @brief 显示所有流场矩阵
- */
+// 显示所有矩阵
 void Mesh::displayAll() const {
     displayMatrix(u, "u");
     displayMatrix(u_star, "u_star");
@@ -133,22 +68,16 @@ void Mesh::displayAll() const {
     displayMatrix(v_face, "v_face");
 }
 
-/**
- * @brief 为内部点创建编号系统
- * @details 从上到下、从左到右遍历网格,为所有内部点(bctype=0)分配唯一编号
- *          用于构建线性方程组的行号
- */
 void Mesh::createInterId() {
     interid = MatrixXi::Zero(bctype.rows(), bctype.cols());
     interi.clear();
     interj.clear();
     internumber = 0;
     int count = 0;
-    
-    // 从上到下,从左到右遍历
+    // 从上到下，从左到右遍历
     for(int i = 0; i < bctype.rows(); i++) {
         for(int j = 0; j < bctype.cols(); j++) {
-            if(bctype(i,j) == 0) {  // 只对内部点编号
+            if(bctype(i,j) == 0) {
                 interid(i,j) = count;
                 interi.push_back(i);
                 interj.push_back(j);
@@ -158,14 +87,6 @@ void Mesh::createInterId() {
         }
     }
 }
-
-/**
- * @brief 设置矩形区域的边界类型和区域ID
- * @param x1, y1 左上角坐标(网格索引)
- * @param x2, y2 右下角坐标(网格索引)
- * @param bcValue 边界类型值
- * @param zoneValue 区域ID值
- */
 void Mesh::setBlock(int x1, int y1, int x2, int y2, double bcValue, double zoneValue) {
     // 确保坐标范围合法
     x1 = std::max(0, std::min(x1, nx + 1));
@@ -181,39 +102,20 @@ void Mesh::setBlock(int x1, int y1, int x2, int y2, double bcValue, double zoneV
     bctype.block(y1, x1, y2-y1+1, x2-x1+1).setConstant(bcValue);
     zoneid.block(y1, x1, y2-y1+1, x2-x1+1).setConstant(zoneValue);
 }
-
-/**
- * @brief 设置指定区域的速度边界条件
- * @param zoneIndex 区域索引
- * @param u x方向速度
- * @param v y方向速度
- */
 void Mesh::setZoneUV(int zoneIndex, double u, double v) {
-    // 确保向量足够长
+    // 确保 zoneu 和 zonev 向量足够长
     while(zoneu.size() <= zoneIndex) {
         zoneu.push_back(0.0);
         zonev.push_back(0.0);
     }
     
+    // 设置指定索引的值
     zoneu[zoneIndex] = u;
     zonev[zoneIndex] = v;
 }
-
-/**
- * @brief 初始化边界条件
- * @details 根据bctype和zoneid设置:
- *          1. 单元中心速度(u, v, u_star, v_star)
- *          2. 单元面速度(u_face, v_face)
- * 
- * 边界类型定义:
- * - 0: 内部点
- * - >0: 固壁边界
- * - -1: 压力出口
- * - -2: 速度入口
- * - -3: 并行交界面
- */
-void Mesh::initializeBoundaryConditions() {
-    // 1. 初始化单元中心速度
+void Mesh::initializeBoundaryConditions() 
+{
+    // 遍历所有网格点，处理非内部点的速度
     for(int i = 0; i <= ny + 1; i++) {
         for(int j = 0; j <= nx + 1; j++) {
             if(bctype(i,j) != 0) {  // 非内部点
@@ -226,53 +128,52 @@ void Mesh::initializeBoundaryConditions() {
         }
     }
 
-    // 2. 初始化u_face(垂直面上的x方向速度)
-    for(int i = 0; i <= ny + 1; i++) {
-        for(int j = 0; j <= nx; j++) {
-            bool left_is_internal = (bctype(i,j) == 0);
-            bool right_is_internal = (bctype(i,j+1) == 0);
+    // 处理 u_face
+for(int i = 0; i <= ny + 1; i++) {
+    for(int j = 0; j <= nx; j++) {
+        // 检查面两侧的单元格
+        bool left_is_internal = (bctype(i,j) == 0);
+        bool right_is_internal = (bctype(i,j+1) == 0);
 
-            if(left_is_internal && !right_is_internal) {
-                // 右侧是边界,使用右侧单元格的速度
-                u_face(i,j) = zoneu[zoneid(i,j+1)];
-            }
-            else if(!left_is_internal && right_is_internal) {
-                // 左侧是边界,使用左侧单元格的速度
-                u_face(i,j) = zoneu[zoneid(i,j)];
-            }
-            else if(!left_is_internal && !right_is_internal) {
-                // 两侧都是边界,取均值
-                u_face(i,j) = 0.5 * (zoneu[zoneid(i,j)] + zoneu[zoneid(i,j+1)]);
-            }
+        if(left_is_internal && !right_is_internal) {
+            // 右侧是边界，使用右侧单元格的速度
+            u_face(i,j) = zoneu[zoneid(i,j+1)];
         }
-    }
-
-    // 3. 初始化v_face(水平面上的y方向速度)
-    for(int i = 0; i <= ny; i++) {
-        for(int j = 0; j <= nx + 1; j++) {
-            bool top_is_internal = (bctype(i,j) == 0);
-            bool bottom_is_internal = (bctype(i+1,j) == 0);
-
-            if(top_is_internal && !bottom_is_internal) {
-                // 下侧是边界,使用下侧单元格的速度
-                v_face(i,j) = zonev[zoneid(i+1,j)];
-            }
-            else if(!top_is_internal && bottom_is_internal) {
-                // 上侧是边界,使用上侧单元格的速度
-                v_face(i,j) = zonev[zoneid(i,j)];
-            }
-            else if(!top_is_internal && !bottom_is_internal) {
-                // 上下都是边界,取均值
-                v_face(i,j) = 0.5 * (zonev[zoneid(i,j)] + zonev[zoneid(i+1,j)]);
-            }
+        else if(!left_is_internal && right_is_internal) {
+            // 左侧是边界，使用左侧单元格的速度
+            u_face(i,j) = zoneu[zoneid(i,j)];
+        }
+        else if(!left_is_internal && !right_is_internal) {
+            // 两侧都是边界，取均值
+            u_face(i,j) = 0.5 * (zoneu[zoneid(i,j)] + zoneu[zoneid(i,j+1)]);
         }
     }
 }
 
-/**
- * @brief 保存网格数据到文件夹
- * @param folderPath 目标文件夹路径
- */
+// 处理 v_face
+for(int i = 0; i <= ny; i++) {
+    for(int j = 0; j <= nx + 1; j++) {
+        // 检查面上下的单元格
+        bool top_is_internal = (bctype(i,j) == 0);
+        bool bottom_is_internal = (bctype(i+1,j) == 0);
+
+        if(top_is_internal && !bottom_is_internal) {
+            // 下侧是边界，使用下侧单元格的速度
+            v_face(i,j) = zonev[zoneid(i+1,j)];
+        }
+        else if(!top_is_internal && bottom_is_internal) {
+            // 上侧是边界，使用上侧单元格的速度
+            v_face(i,j) = zonev[zoneid(i,j)];
+        }
+        else if(!top_is_internal && !bottom_is_internal) {
+            // 上下都是边界，取均值
+            v_face(i,j) = 0.5 * (zonev[zoneid(i,j)] + zonev[zoneid(i+1,j)]);
+        }
+    }
+}
+}
+
+
 void Mesh::saveToFolder(const std::string& folderPath) const {
     // 创建文件夹
     if (!fs::exists(folderPath)) {
@@ -285,12 +186,11 @@ void Mesh::saveToFolder(const std::string& folderPath) const {
     paramFile << dx << " " << dy << "\n";
     paramFile.close();
 
-    // 保存边界类型矩阵
+    // 保存矩阵数据
     std::ofstream bcFile(folderPath + "/bctype.dat");
     bcFile << bctype;
     bcFile.close();
 
-    // 保存区域ID矩阵
     std::ofstream zoneFile(folderPath + "/zoneid.dat");
     zoneFile << zoneid;
     zoneFile.close();
@@ -303,11 +203,7 @@ void Mesh::saveToFolder(const std::string& folderPath) const {
     zoneuvFile.close();
 }
 
-/**
- * @brief 从文件夹加载网格数据(构造函数)
- * @param folderPath 网格数据文件夹路径
- * @throws std::runtime_error 如果文件不存在或读取失败
- */
+// 从文件夹构造网格
 Mesh::Mesh(const std::string& folderPath) {
     if (!fs::exists(folderPath)) {
         throw std::runtime_error("网格文件夹不存在!");
@@ -319,10 +215,11 @@ Mesh::Mesh(const std::string& folderPath) {
         throw std::runtime_error("无法打开参数文件!");
     }
     
+    // 读取基本参数
     paramFile >> nx >> ny >> ::dx >> ::dy;
     paramFile.close();
 
-    // 初始化所有矩阵(包含边界层,尺寸为n+2)
+    // 初始化所有矩阵
     u.resize(ny + 2, nx + 2);
     u_star.resize(ny + 2, nx + 2);
     u0.resize(ny + 2, nx + 2);
@@ -338,6 +235,7 @@ Mesh::Mesh(const std::string& folderPath) {
     zoneid.resize(ny + 2, nx + 2);
     interid.resize(ny + 2, nx + 2);
 
+    // 初始化为零
     initializeToZero();
 
     // 读取边界类型
@@ -382,30 +280,20 @@ Mesh::Mesh(const std::string& folderPath) {
     // 初始化边界条件
     initializeBoundaryConditions();
 }
-
-// ============================================================================
-// Equation类实现 - 离散方程系统
-// ============================================================================
-
-/**
- * @brief 构造函数 - 初始化方程系数矩阵
- * @param mesh_ 网格对象引用
- */
+// Equation 类的构造函数
 Equation::Equation(Mesh& mesh_)
-    : A_p(mesh_.ny + 2, mesh_.nx + 2),  ///< 中心系数
-      A_e(mesh_.ny + 2, mesh_.nx + 2),  ///< 东邻系数
-      A_w(mesh_.ny + 2, mesh_.nx + 2),  ///< 西邻系数
-      A_n(mesh_.ny + 2, mesh_.nx + 2),  ///< 北邻系数
-      A_s(mesh_.ny + 2, mesh_.nx + 2),  ///< 南邻系数
-      source(mesh_.internumber),         ///< 源项向量
-      A(mesh_.internumber, mesh_.internumber),  ///< 稀疏系数矩阵
+    : A_p(mesh_.ny + 2, mesh_.nx + 2),
+      A_e(mesh_.ny + 2, mesh_.nx + 2),
+      A_w(mesh_.ny + 2, mesh_.nx + 2),
+      A_n(mesh_.ny + 2, mesh_.nx + 2),
+      A_s(mesh_.ny + 2, mesh_.nx + 2),
+      source(mesh_.internumber),
+      A(mesh_.internumber, mesh_.internumber),
       n_x(mesh_.nx), 
       n_y(mesh_.ny),
-      mesh(mesh_) {}
-
-/**
- * @brief 初始化方程系数为零
- */
+      mesh(mesh_)
+{}
+// 初始化矩阵和源向量为零
 void Equation::initializeToZero() {
     A_p.setZero();
     A_e.setZero();
@@ -415,44 +303,39 @@ void Equation::initializeToZero() {
     source.setZero();
     A.setZero();
 }
-
-/**
- * @brief 构建稀疏系数矩阵
- * @details 将五对角系数矩阵(A_p, A_e, A_w, A_n, A_s)组装成Eigen稀疏矩阵
- *          方程形式: A_p*phi_P = A_e*phi_E + A_w*phi_W + A_n*phi_N + A_s*phi_S + source
- */
 void Equation::build_matrix() {
     typedef Eigen::Triplet<double> T;
     std::vector<T> tripletList;
 
-    // 遍历所有内部点
-    for(int i = 1; i <= n_y; i++) {
+    // 遍历所有网格点
+    for(int i = 1; i <=n_y ; i++) {
         for(int j = 1; j <= n_x; j++) {
-            if(mesh.bctype(i,j) == 0) {  // 只处理内部点
-                int current_id = mesh.interid(i,j) ;  // 当前点在方程组中的行号
+            // 只处理内部点（bctype为0的点）
+            if(mesh.bctype(i,j) == 0) {
+                int current_id = mesh.interid(i,j) ;  // 当前点在方程组中的编号
                 
-                // 添加中心点系数(对角元)
+                // 添加中心点系数
                 tripletList.emplace_back(current_id, current_id, A_p(i,j));
                 
-                // 检查东邻点
+                // 检查东邻接单元
                 if(mesh.bctype(i,j+1) == 0) {
                     int east_id = mesh.interid(i,j+1) ;
                     tripletList.emplace_back(current_id, east_id, -A_e(i,j));
                 }
                 
-                // 检查西邻点
+                // 检查西邻接单元
                 if(mesh.bctype(i,j-1) == 0) {
                     int west_id = mesh.interid(i,j-1) ;
                     tripletList.emplace_back(current_id, west_id, -A_w(i,j));
                 }
                 
-                // 检查北邻点
+                // 检查北邻接单元
                 if(mesh.bctype(i-1,j) == 0) {
                     int north_id = mesh.interid(i-1,j) ;
                     tripletList.emplace_back(current_id, north_id, -A_n(i,j));
                 }
                 
-                // 检查南邻点
+                // 检查南邻接单元
                 if(mesh.bctype(i+1,j) == 0) {
                     int south_id = mesh.interid(i+1,j) ;
                     tripletList.emplace_back(current_id, south_id, -A_s(i,j));
@@ -461,28 +344,15 @@ void Equation::build_matrix() {
         }
     }
     
-    // 组装稀疏矩阵
+    // 设置稀疏矩阵大小为内部点数量
     A.resize(mesh.internumber, mesh.internumber);
     A.setFromTriplets(tripletList.begin(), tripletList.end());
 }
-
-// ============================================================================
-// 线性方程组求解器
-// ============================================================================
-
-/**
- * @brief 求解线性方程组 A*phi = source
- * @param equation 方程对象
- * @param epsilon 求解器收敛容差
- * @param l2_norm 输出残差L2范数
- * @param phi 解向量(输入初值,输出解)
- * @note 使用共轭梯度法(CG),最大迭代次数=1(作为SIMPLE循环的一步)
- */
-void solve(Equation& equation, double epsilon, double& l2_norm, MatrixXd& phi) {
-    // 创建解向量
+void solve(Equation& equation, double epsilon, double& l2_norm, MatrixXd& phi){
+    // 创建解向量，长度为内部点数量
     VectorXd x(equation.mesh.internumber);
 
-    // 从网格提取初值
+    // 根据 interid 构建初始解向量，遍历整个网格
     for(int i = 0; i <= equation.n_y + 1; i++) {
         for(int j = 0; j <= equation.n_x + 1; j++) {
             if(equation.mesh.bctype(i,j) == 0) {
@@ -492,17 +362,18 @@ void solve(Equation& equation, double epsilon, double& l2_norm, MatrixXd& phi) {
         }
     }
 
-    // 计算初始残差
+    // 计算残差
     l2_norm = (equation.A * x - equation.source).norm();
 
-    // 共轭梯度法求解
-    ConjugateGradient<SparseMatrix<double>> solver;
+    // 求解线性方程组
+   // BiCGSTAB<SparseMatrix<double>> solver;
+   ConjugateGradient<SparseMatrix<double>> solver;
     solver.compute(equation.A);
     solver.setTolerance(epsilon); 
-    solver.setMaxIterations(1);  // SIMPLE循环中每次只迭代一步
+    solver.setMaxIterations(1);     // 设置最大迭代次数
     x = solver.solve(equation.source);
 
-    // 将解写回网格
+    // 将结果写回网格，同样遍历整个网格
     for(int i = 0; i <= equation.n_y + 1; i++) {
         for(int j = 0; j <= equation.n_x + 1; j++) {
             if(equation.mesh.bctype(i,j) == 0) {
@@ -513,20 +384,6 @@ void solve(Equation& equation, double epsilon, double& l2_norm, MatrixXd& phi) {
     }
 }
 
-// ============================================================================
-// 速度场计算
-// ============================================================================
-
-/**
- * @brief 计算单元面上的速度(Rhie-Chow插值)
- * @param mesh 网格对象
- * @param equ_u x方向动量方程
- * @details 
- * 使用压力梯度修正的动量插值,避免压力场棋盘式震荡
- * 
- * 垂直面速度: u_face(i,j) = 0.5*(u_P + u_E) + 压力修正项
- * 水平面速度: v_face(i,j) = 0.5*(v_P + v_N) + 压力修正项
- */
 void face_velocity(Mesh& mesh, Equation& equ_u) {
     MatrixXd& u_face = mesh.u_face;
     MatrixXd& v_face = mesh.v_face;
@@ -536,34 +393,28 @@ void face_velocity(Mesh& mesh, Equation& equ_u) {
     MatrixXd& p = mesh.p;
     MatrixXd& A_p = equ_u.A_p;
 
-    // 计算u_face(垂直面上的x方向速度)
     for(int i = 0; i <= mesh.ny + 1; i++) {
         for(int j = 0; j <= mesh.nx; j++) {
-            // 情况1: 内部面或并行交界面
             if ((bctype(i,j) == 0 && bctype(i,j+1) == 0) || 
                 (bctype(i,j) == 0 && bctype(i,j+1) == -3) ||
                 (bctype(i,j) == -3 && bctype(i,j+1) == 0)) {
 
-                // 处理压力边界条件
                 if (bctype(i,j+2) == -2) p(i,j+2) = p(i,j+1);
                 else if (bctype(i,j-1) == -2) p(i,j-1) = p(i,j);
                 else if (bctype(i,j+2) == -1) p(i,j+2) = 0;
                 else if (bctype(i,j-1) == -1) p(i,j-1) = 0;
 
-                // Rhie-Chow插值公式
                 u_face(i,j) = 0.5*(u(i,j) + u(i,j+1))
                             + 0.25*(p(i,j+1) - p(i,j-1)) * dy / A_p(i,j)
                             + 0.25*(p(i,j+2) - p(i,j)) * dy / A_p(i,j+1)
                             - 0.5*(1.0/A_p(i,j) + 1.0/A_p(i,j+1)) * (p(i,j+1) - p(i,j)) * dy;
             }
-            // 情况2: 压力出口边界
             else if (bctype(i,j) == 0 && bctype(i,j+1) == -1) {
                 u_face(i,j) = u(i,j);
             }
             else if (bctype(i,j) == -1 && bctype(i,j+1) == 0) {
                 u_face(i,j) = u(i,j+1);
             }
-            // 情况3: 速度入口边界
             else if (bctype(i,j) == 0 && bctype(i,j+1) == -2) {
                 u_face(i,j) = mesh.zoneu[mesh.zoneid(i,j+1)];
             }
@@ -574,22 +425,19 @@ void face_velocity(Mesh& mesh, Equation& equ_u) {
                 u_face(i,j) = 0.0;
             }
 
-            // NaN检查
+            // NaN 检查
             if (std::isnan(u_face(i,j))) u_face(i,j) = 0.0;
         }
     }
 
-    // 计算v_face(水平面上的y方向速度)
     for(int i = 0; i <= mesh.ny; i++) {
         for(int j = 0; j <= mesh.nx + 1; j++) {
             if (bctype(i,j) == 0 && bctype(i+1,j) == 0) {
-                // 处理压力边界条件
                 if (bctype(i+2,j) == -2) p(i+2,j) = p(i+1,j);
                 else if (bctype(i-1,j) == -2) p(i-1,j) = p(i,j);
                 else if (bctype(i+2,j) == -1) p(i+2,j) = 0;
                 else if (bctype(i-1,j) == -1) p(i-1,j) = 0;
 
-                // Rhie-Chow插值公式
                 v_face(i,j) = 0.5*(v(i+1,j) + v(i,j))
                             + 0.25*(p(i,j) - p(i+2,j)) * dx / A_p(i+1,j)
                             + 0.25*(p(i-1,j) - p(i+1,j)) * dx / A_p(i,j)
@@ -611,28 +459,20 @@ void face_velocity(Mesh& mesh, Equation& equ_u) {
                 v_face(i,j) = 0.0;
             }
 
-            // NaN检查
+            // NaN 检查
             if (std::isnan(v_face(i,j))) v_face(i,j) = 0.0;
         }
     }
 }
 
-// ============================================================================
-// 压力修正方程
-// ============================================================================
 
-/**
- * @brief 构建压力修正方程(Poisson方程)
- * @param mesh 网格对象
- * @param equ_p 压力修正方程
- * @param equ_u x方向动量方程(提供A_p系数)
- * @details
- * 离散形式: sum(Ap_nb * p'_nb) = sum(rho * u_face * A)
- * 其中 Ap_nb = 0.5*(1/A_p(P) + 1/A_p(nb)) * dy^2 (东西面)
- *      Ap_nb = 0.5*(1/A_p(P) + 1/A_p(nb)) * dx^2 (南北面)
- * 源项为速度散度: -(u_e - u_w)*dy - (v_n - v_s)*dx
- */
-void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u) {
+
+
+
+
+void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u)
+{
+    
     MatrixXd &u_face = mesh.u_face;
     MatrixXd &v_face = mesh.v_face;
     MatrixXd &bctype = mesh.bctype;
@@ -644,68 +484,78 @@ void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u) {
     MatrixXd &Ap_s = equ_p.A_s;
     VectorXd &source_p = equ_p.source;
 
-    // 遍历所有内部点
+    // 遍历网格点
     for(int i = 0; i <= equ_p.n_y+1; i++) {
         for(int j = 0; j <= equ_p.n_x+1; j++) {
             if(bctype(i,j) == 0) {  // 内部点
                 int n = mesh.interid(i,j) ;
                 double Ap_temp = 0;
-                
-                // 计算东面系数
-                if(bctype(i,j+1) == 0 || bctype(i,j+1) == -3) {
-                    Ap_e(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i,j+1))*(dy*dy);
+                double source_temp = 0;
+                // 检查东面
+                if(bctype(i,j+1) == 0) {
+                    Ap_e(i,j) = 0.5*(1/A_p(i,j) +1/A_p(i,j+1))*(dy*dy);
                     Ap_temp += Ap_e(i,j);
-                } else {
+                }  
+                else if (bctype(i,j+1) == -3)
+                {
+                    Ap_e(i,j) = 0.5*(1/A_p(i,j) +1/A_p(i,j+1))*(dy*dy);
+                    Ap_temp += Ap_e(i,j);
+                }
+                
+              
+                else{
                     Ap_e(i,j) = 0;
                 }
 
-                // 计算西面系数
-                if(bctype(i,j-1) == 0 || bctype(i,j-1) == -3) {
+                // 检查西面
+                if(bctype(i,j-1) == 0) {
                     Ap_w(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i,j-1))*(dy*dy);
                     Ap_temp += Ap_w(i,j);
-                } else {
+                }
+                else if (bctype(i,j-1) == -3)
+                {
+                    Ap_w(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i,j-1))*(dy*dy);
+                    Ap_temp += Ap_w(i,j);
+                }
+                
+                 else {
                     Ap_w(i,j) = 0;
                 }
 
-                // 计算北面系数
+                // 检查北面
                 if(bctype(i-1,j) == 0) {
                     Ap_n(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i-1,j))*(dx*dx);
                     Ap_temp += Ap_n(i,j);
-                } else {
+                }
+               
+                 else {
                     Ap_n(i,j) = 0;
                 }
 
-                // 计算南面系数
+                // 检查南面
                 if(bctype(i+1,j) == 0) {
                     Ap_s(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i+1,j))*(dx*dx);
                     Ap_temp += Ap_s(i,j);
-                } else {
+                } 
+                
+                else {
                     Ap_s(i,j) = 0;
                 }
 
-                // 设置中心系数
+                // 设置中心系数和源项
                 Ap_p(i,j) = Ap_temp;
+                source_p[n]=0;
                 
-                // 计算源项(负的速度散度)
-                source_p[n] = -(u_face(i,j) - u_face(i,j-1))*dy 
-                            - (v_face(i-1,j) - v_face(i,j))*dx;         
+                source_p[n] +=   -(u_face(i,j) - u_face(i,j-1))*dy 
+                - (v_face(i-1,j) - v_face(i,j))*dx;         
             }
         }
     }
 }
 
-// ============================================================================
-// 压力和速度修正
-// ============================================================================
 
-/**
- * @brief 修正压力场
- * @param mesh 网格对象
- * @param equ_u 动量方程(未使用)
- * @param alpha_p 压力松弛因子
- * @details p_star = p + alpha_p * p_prime
- */
-void correct_pressure(Mesh &mesh, Equation &equ_u, double alpha_p) {
+void correct_pressure(Mesh &mesh, Equation &equ_u,double alpha_p)
+{
     MatrixXd &p = mesh.p;
     MatrixXd &p_star = mesh.p_star;
     MatrixXd &p_prime = mesh.p_prime;
@@ -713,30 +563,25 @@ void correct_pressure(Mesh &mesh, Equation &equ_u, double alpha_p) {
     int n_x = mesh.nx;
     int n_y = mesh.ny;
 
-    // 边界点的压力修正量设为0
+ 
     for(int i = 0; i <= n_y + 1; i++) {
         for(int j = 0; j <= n_x + 1; j++) {
-            if(bctype(i,j) != 0) {
-                p_prime(i,j) = 0;
-                p(i,j) = 0;
-                p_star(i,j) = 0;
+            if(bctype(i,j) > 0) {  // 边界点
+                
+                    p_prime(i,j) = 0;
+                }
             }
         }
-    }
+    
 
-    // 更新压力场(带松弛)
-    p_star = p + alpha_p * p_prime;
+    // 更新压力场
+    
+      // 压力松弛因子
+p_star =p + alpha_p *p_prime;
 }
 
-/**
- * @brief 修正速度场
- * @param mesh 网格对象
- * @param equ_u x方向动量方程
- * @details
- * 1. 修正单元中心速度: u_star = u + 0.5*(p'_W - p'_E)*dy/A_p
- * 2. 修正单元面速度: u_face += 0.5*(1/A_p(P) + 1/A_p(E))*(p'_P - p'_E)*dy
- */
-void correct_velocity(Mesh &mesh, Equation &equ_u) {
+void correct_velocity(Mesh &mesh, Equation &equ_u)
+{
     MatrixXd &u = mesh.u;
     MatrixXd &v = mesh.v;
     MatrixXd &u_face = mesh.u_face;
@@ -749,19 +594,21 @@ void correct_velocity(Mesh &mesh, Equation &equ_u) {
     int n_x = mesh.nx;
     int n_y = mesh.ny;
 
-    // 修正单元中心x方向速度
+    
+
+    // 修正 u_star
     for (int i = 0; i <= n_y+1; i++) {
         for (int j = 0; j <= n_x+1; j++) {
             if (bctype(i,j) == 0) {
                 double p_west, p_east;
 
-                // 确定西面压力修正量
+                // 西面
                 if (bctype(i,j-1) == 0 || bctype(i,j-1) == -3)
                     p_west = p_prime(i,j-1);
                 else
                     p_west = p_prime(i,j);
 
-                // 确定东面压力修正量
+                // 东面
                 if (bctype(i,j+1) == 0 || bctype(i,j+1) == -3)
                     p_east = p_prime(i,j+1);
                 else
@@ -772,19 +619,19 @@ void correct_velocity(Mesh &mesh, Equation &equ_u) {
         }
     }
 
-    // 修正单元中心y方向速度
+    // 修正 v_star
     for (int i = 0; i <= n_y+1; i++) {
         for (int j = 0; j <= n_x+1; j++) {
             if (bctype(i,j) == 0) {
                 double p_north, p_south;
 
-                // 确定北面压力修正量
+                // 北面
                 if (bctype(i-1,j) == 0 || bctype(i-1,j) == -3)
                     p_north = p_prime(i-1,j);
                 else
                     p_north = p_prime(i,j);
 
-                // 确定南面压力修正量
+                // 南面
                 if (bctype(i+1,j) == 0 || bctype(i+1,j) == -3)
                     p_south = p_prime(i+1,j);
                 else
@@ -795,779 +642,852 @@ void correct_velocity(Mesh &mesh, Equation &equ_u) {
         }
     }
 
-    // 修正垂直面上的x方向速度
+    // 修正 u_face (互斥判断)
     for (int i = 0; i <= n_y+1; i++) {
         for (int j = 0; j <= n_x; j++) {
             if ((bctype(i,j) == 0 && bctype(i,j+1) == 0) ||
                 (bctype(i,j) == 0 && bctype(i,j+1) == -3) ||
                 (bctype(i,j) == -3 && bctype(i,j+1) == 0)) {
-                // 内部面或并行交界面
-                u_face(i,j) += 0.5 * (1/A_p(i,j) + 1/A_p(i,j+1)) * 
+                // 情况1：内部或特殊内部 → 做压力修正
+                u_face(i,j) = u_face(i,j) + 
+                              0.5 * (1/A_p(i,j) + 1/A_p(i,j+1)) * 
                               (p_prime(i,j) - p_prime(i,j+1)) * dy;
             }
             else if (bctype(i,j) == 0 && bctype(i,j+1) == -1) {
-                // 压力边界
+                // 情况2：内部-压力边界 → 用 u_star(i,j)
                 u_face(i,j) = u_star(i,j);
             }
             else if (bctype(i,j) == -1 && bctype(i,j+1) == 0) {
+                // 情况3：压力边界-内部 → 用 u_star(i,j+1)
                 u_face(i,j) = u_star(i,j+1);
+            }
+            else {
+                // 其它情况，保持不变或由边界条件处理
             }
         }
     }
 
-    // 修正水平面上的y方向速度
+    // 修正 v_face (互斥判断)
     for (int i = 0; i <= n_y; i++) {
         for (int j = 0; j <= n_x+1; j++) {
             if ((bctype(i,j) == 0 && bctype(i+1,j) == 0) ||
                 (bctype(i,j) == 0 && bctype(i+1,j) == -3) ||
                 (bctype(i,j) == -3 && bctype(i+1,j) == 0)) {
-                // 内部面或并行交界面
-                v_face(i,j) += 0.5 * (1/A_p(i,j) + 1/A_p(i+1,j)) * 
+                // 情况1：内部或特殊内部 → 做压力修正
+                v_face(i,j) = v_face(i,j) + 
+                              0.5 * (1/A_p(i,j) + 1/A_p(i+1,j)) * 
                               (p_prime(i+1,j) - p_prime(i,j)) * dx;
             }
             else if (bctype(i,j) == 0 && bctype(i+1,j) == -1) {
+                // 情况2：内部-压力边界 → 用 v_star(i,j)
                 v_face(i,j) = v_star(i,j);
             }
             else if (bctype(i,j) == -1 && bctype(i+1,j) == 0) {
+                // 情况3：压力边界-内部 → 用 v_star(i+1,j)
                 v_face(i,j) = v_star(i+1,j);
+            }
+            else {
+                // 其它情况，保持不变或由边界条件处理
             }
         }
     }
 }
 
-// ============================================================================
-// 后处理
-// ============================================================================
+void post_processing(Mesh &mseh)
+{   
+   
 
-/**
- * @brief 保存计算结果到文件
- * @param mesh 网格对象
- */
-void post_processing(Mesh &mesh) {   
-    std::ofstream outFile;
-    
-    outFile.open("u.dat");
-    outFile << mesh.u_star;
-    outFile.close();
+    //保存计算结果
+     std::ofstream outFile;
+     outFile.open("u.dat");
+     outFile << mseh.u_star;
+     outFile.close();
 
-    outFile.open("v.dat");
-    outFile << mesh.v_star;
-    outFile.close();
+     outFile.open("v.dat");
+     outFile << mseh.v_star;
+     outFile.close();
 
-    outFile.open("p.dat");
-    outFile << mesh.p_star;
-    outFile.close();
+     outFile.open("p.dat");
+     outFile << mseh.p_star;
+     outFile.close();
+
+
+
+
+
+
 }
 
-// ============================================================================
-// 进度条显示
-// ============================================================================
-
-/**
- * @brief 显示进度条和预估剩余时间
- * @param current_step 当前步数
- * @param total_steps 总步数
- * @param elapsed_time 已用时间(秒)
- */
 void show_progress_bar(int current_step, int total_steps, double elapsed_time) {
+    // 计算进度百分比
     double progress = static_cast<double>(current_step) / total_steps;
+    
+    // 设置进度条的宽度
     int bar_width = 50;
+    
+    // 计算进度条中"="的数量
     int pos = static_cast<int>(bar_width * progress);
+    
+    // 计算预计剩余时间
     double remaining_time = (elapsed_time / current_step) * (total_steps - current_step);
     
+    // 打印进度条和相关信息
     std::cout << "[";
+    
+    // 绘制进度条
     for (int i = 0; i < bar_width; ++i) {
-        if (i < pos) std::cout << "=";
-        else if (i == pos) std::cout << ">";
-        else std::cout << " ";
+        if (i < pos) {
+            std::cout << "=";  // 已完成的部分
+        } else if (i == pos) {
+            std::cout << ">";  // 当前进度的位置
+        } else {
+            std::cout << " ";  // 未完成的部分
+        }
     }
     
+    // 显示进度条，已用时间和预计剩余时间
     std::cout << "] " 
-              << std::fixed << std::setprecision(2) << progress * 100 << "% "
-              << "已用时间: " << elapsed_time << "秒 "
-              << "预计剩余时间: " << remaining_time << "秒\r";
+              << std::fixed << std::setprecision(2) << progress * 100 << "% "  // 显示进度百分比
+              << "已用时间: " << std::fixed << std::setprecision(2) << elapsed_time << "秒 "  // 显示已用时间
+              << "预计剩余时间: " << std::fixed << std::setprecision(2) << remaining_time << "秒\r";  // 显示预计剩余时间
+    
+    // 刷新输出，确保实时更新
     std::cout.flush();
 }
 
-// ============================================================================
-// 动量方程离散化 - 稳态SIMPLE算法
-// ============================================================================
 
-/**
- * @brief 构建动量方程系数矩阵(稳态SIMPLE)
- * @param mesh 网格对象
- * @param equ_u x方向动量方程
- * @param equ_v y方向动量方程
- * @param mu 动力粘度
- * @param alpha_uv 速度松弛因子
- * @details
- * 离散形式: A_p*u_P = A_e*u_E + A_w*u_W + A_n*u_N + A_s*u_S + S
- * 其中: A_nb = D_nb + max(0, ±F_nb)  (混合格式)
- *       D = mu*A/dx  (扩散系数)
- *       F = rho*u*A  (对流通量)
- *       S = (p_W - p_E)*dy/2 + (1-alpha)*A_p*u_old
- */
-void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v, 
-                      double mu, double alpha_uv) {
-    int n_x = equ_u.n_x;
-    int n_y = equ_u.n_y;
+void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,double alpha_uv)
+{   
+    //-1 压力出口(给定压强)
+    //-2 固定速度
+    //-3 并行交界面
+
+    int n,i,j;
+    int n_x=equ_u.n_x;
+    int n_y=equ_u.n_y;
+    double D_e,D_w,D_n,D_s,F_e,F_n,F_s,F_w;
+
     
-    // 计算扩散系数
-    double D_e = dy * mu / dx;  // 东面扩散系数
-    double D_w = dy * mu / dx;  // 西面扩散系数
-    double D_n = dx * mu / dy;  // 北面扩散系数
-    double D_s = dx * mu / dy;  // 南面扩散系数
-    
-    // 引用网格变量(简化代码)
+    D_e=dy*mu/(dx);
+    D_w=dy*mu/(dx);
+    D_n=dx*mu/(dy);
+    D_s=dx*mu/(dy);
+    // 引用网格变量
     MatrixXd &zoneid = mesh.zoneid;
     MatrixXd &bctype = mesh.bctype;
-    MatrixXd &u = mesh.u;
-    MatrixXd &v = mesh.v;
-    MatrixXd &u_face = mesh.u_face;
-    MatrixXd &v_face = mesh.v_face;
-    MatrixXd &p = mesh.p;
-    MatrixXd &u_star = mesh.u_star;
-    MatrixXd &v_star = mesh.v_star;
-    MatrixXd &A_p = equ_u.A_p;
-    MatrixXd &A_e = equ_u.A_e;
-    MatrixXd &A_w = equ_u.A_w;
-    MatrixXd &A_n = equ_u.A_n;
-    MatrixXd &A_s = equ_u.A_s;
-    VectorXd &source_x = equ_u.source;
-    VectorXd &source_y = equ_v.source;
-    vector<double> zoneu = mesh.zoneu;
-    vector<double> zonev = mesh.zonev;
+    MatrixXd &u= mesh.u;
+    MatrixXd &v= mesh.v;
+    MatrixXd &u_face= mesh.u_face;
+    MatrixXd &v_face= mesh.v_face;
+    MatrixXd &p= mesh.p;
+    MatrixXd &p_star= mesh.p_star;
+    MatrixXd &p_prime= mesh.p_prime;
+    MatrixXd &u_star= mesh.u_star;
+    MatrixXd &v_star= mesh.v_star;
+    MatrixXd &A_p=equ_u.A_p;
+    MatrixXd &A_e=equ_u.A_e;
+    MatrixXd &A_w=equ_u.A_w;
+    MatrixXd &A_n=equ_u.A_n;
+    MatrixXd &A_s=equ_u.A_s;
+    VectorXd &source_x=equ_u.source;
+    VectorXd &source_y=equ_v.source;
+    vector<double> zoneu=mesh.zoneu;
+    vector<double> zonev=mesh.zonev;
     
-    // 遍历所有内部点
-    for(int i = 0; i <= n_y+1; i++) {
-        for(int j = 0; j <= n_x+1; j++) {
-            if(bctype(i,j) != 0) continue;  // 跳过边界点
-            
-            int n = mesh.interid(i,j) ;  // 方程编号
-            
-            // 计算各面的对流通量
-            double F_e = dy * u_face(i,j);      // 东面通量
-            double F_w = dy * u_face(i,j-1);    // 西面通量
-            double F_n = dx * v_face(i-1,j);    // 北面通量
-            double F_s = dx * v_face(i,j);      // 南面通量
-            
-            double Ap_temp = 0;
-            double source_x_temp = 0, source_y_temp = 0;
-            
-            // ===== 计算压力源项 =====
-            // x方向压力梯度
-            if((bctype(i,j-1) == 0 || bctype(i,j-1) == -3) && 
-               (bctype(i,j+1) == 0 || bctype(i,j+1) == -3)) {
-                // 两侧都是内部点,使用中心差分
-                source_x_temp = 0.5 * alpha_uv * (p(i,j-1) - p(i,j+1)) * dy;
+    // 遍历网格
+    for(i=0; i<=n_y+1; i++) {
+        for(j=0; j<=n_x+1; j++) {
+            if(bctype(i,j) == 0) {  // 内部面
+                n = mesh.interid(i,j) ;
+                
+                // 计算面上流量
+                F_e = dy*u_face(i,j);
+                F_w = dy*u_face(i,j-1);
+                F_n = dx*v_face(i-1,j);
+                F_s = dx*v_face(i,j);
+                
+                double Ap_temp = 0;
+               // 初始化源项
+               double source_x_temp, source_y_temp;
+    
+                           // 处理 x 方向源项
+            if((bctype(i,j-1) == 0 ||  bctype(i,j-1) == -3) && 
+               (bctype(i,j+1) == 0 ||  bctype(i,j+1) == -3)) {
+                // 两侧都是内部点或滑移边界，使用中心差分
+                source_x_temp = 0.5*alpha_uv*(p(i,j-1)-p(i,j+1))*dy;
+                
             } else if(bctype(i,j-1) == -1) {
-                // 左侧是压力出口(p=0)
-                source_x_temp = 0.5 * alpha_uv * (-p(i,j+1)) * dy;
+                // 左边是压力为0的边界
+                source_x_temp = 0.5*alpha_uv*(-p(i,j+1))*dy;
             } else if(bctype(i,j+1) == -1) {
-                // 右侧是压力出口
-                source_x_temp = 0.5 * alpha_uv * p(i,j-1) * dy;
+                // 右边是压力为0的边界
+                source_x_temp = 0.5*alpha_uv*(p(i,j-1))*dy;
             } else if(bctype(i,j-1) == -2) {
-                // 左侧是速度入口
-                source_x_temp = 0.5 * alpha_uv * (p(i,j) - p(i,j+1)) * dy;
+                // 左边是速度入口
+                source_x_temp = 0.5*alpha_uv*(p(i,j)-p(i,j+1))*dy;
             } else if(bctype(i,j+1) == -2) {
-                // 右侧是速度入口
-                source_x_temp = 0.5 * alpha_uv * (p(i,j-1) - p(i,j)) * dy;
+                // 右边是速度入口
+                source_x_temp = 0.5*alpha_uv*(p(i,j-1)-p(i,j))*dy;
             } else if(bctype(i,j-1) != 0 && bctype(i,j+1) == 0) {
-                // 左边界,右内部
-                source_x_temp = 0.5 * alpha_uv * (p(i,j) - p(i,j+1)) * dy;
+                // 左边是其他边界，右边是内部点
+                source_x_temp = 0.5*alpha_uv*(p(i,j)-p(i,j+1))*dy;
             } else if(bctype(i,j-1) == 0 && bctype(i,j+1) != 0) {
-                // 左内部,右边界
-                source_x_temp = 0.5 * alpha_uv * (p(i,j-1) - p(i,j)) * dy;
+                // 左边是内部点，右边是其他边界
+                source_x_temp = 0.5*alpha_uv*(p(i,j-1)-p(i,j))*dy;
             } else {
-                source_x_temp = 0.0;
+                // 两边都是固定边界或其他情况
+                source_x_temp = 0.0; 
             }
             
-            // y方向压力梯度(类似处理)
-            if((bctype(i-1,j) == 0 || bctype(i-1,j) == -3) && 
-               (bctype(i+1,j) == 0 || bctype(i+1,j) == -3)) {
-                source_y_temp = 0.5 * alpha_uv * (p(i+1,j) - p(i-1,j)) * dx;
+            // 处理 y 方向源项
+            if((bctype(i-1,j) == 0 ||  bctype(i-1,j) == -3) && 
+               (bctype(i+1,j) == 0 ||  bctype(i+1,j) == -3)) {
+                // 上下都是内部点或滑移边界，使用中心差分
+                source_y_temp = 0.5*alpha_uv*(p(i+1,j)-p(i-1,j))*dx;
+                
             } else if(bctype(i-1,j) == -1) {
-                source_y_temp = 0.5 * alpha_uv * p(i+1,j) * dx;
+                // 上边是压力为0的边界
+                source_y_temp = 0.5*alpha_uv*(p(i+1,j))*dx;
+                
             } else if(bctype(i+1,j) == -1) {
-                source_y_temp = 0.5 * alpha_uv * (-p(i-1,j)) * dx;
+                // 下边是压力为0的边界  压力出口
+                source_y_temp = 0.5*alpha_uv*(-p(i-1,j))*dx;
             } else if(bctype(i-1,j) == -2) {
-                source_y_temp = 0.5 * alpha_uv * (p(i+1,j) - p(i,j)) * dx;
+                // 上边是压力为0的边界
+                source_y_temp = 0.5*alpha_uv*(p(i+1,j)-p(i,j))*dx;
+                
             } else if(bctype(i+1,j) == -2) {
-                source_y_temp = 0.5 * alpha_uv * (p(i,j) - p(i-1,j)) * dx;
+                // 下边是压力为0的边界
+                source_y_temp = 0.5*alpha_uv*(p(i,j)-p(i-1,j))*dx;
             } else if(bctype(i-1,j) != 0 && bctype(i+1,j) == 0) {
-                source_y_temp = 0.5 * alpha_uv * (p(i+1,j) - p(i,j)) * dx;
+                // 上边是其他边界，下边是内部点
+                source_y_temp = 0.5*alpha_uv*(p(i+1,j)-p(i,j))*dx;
             } else if(bctype(i-1,j) == 0 && bctype(i+1,j) != 0) {
-                source_y_temp = 0.5 * alpha_uv * (p(i,j) - p(i-1,j)) * dx;
+                // 上边是内部点，下边是其他边界
+                source_y_temp = 0.5*alpha_uv*(p(i,j)-p(i-1,j))*dx;
             } else {
+                // 上下都是固定边界或其他情况
                 source_y_temp = 0.0;
             }
-            
-            // ===== 计算东面系数 =====
-            if(bctype(i,j+1) == 0 || bctype(i,j+1) == -3) {
-                // 东邻是内部点或并行接口
-                A_e(i,j) = D_e + max(0.0, -F_e);  // 混合格式
-                Ap_temp += D_e + max(0.0, F_e);
-            } else if(bctype(i,j+1) > 0) {
-                // 东邻是固壁(无滑移边界)
-                A_e(i,j) = 0;
-                Ap_temp += 2*D_e + max(0.0, F_e);
-                source_x_temp += alpha_uv * zoneu[zoneid(i,j+1)] * (2*D_e + max(0.0, -F_e));
-                source_y_temp += alpha_uv * zonev[zoneid(i,j+1)] * (2*D_e + max(0.0, -F_e));
-            } else if(bctype(i,j+1) == -1) {
-                // 东邻是压力出口
-                A_e(i,j) = 0;
-                Ap_temp += D_e + max(0.0, F_e);
-                source_x_temp += alpha_uv * u_star(i,j) * (D_e + max(0.0, -F_e));
-                source_y_temp += alpha_uv * v_star(i,j) * (D_e + max(0.0, -F_e));
-            } else if(bctype(i,j+1) > -10) {
-                // 东邻是其他边界(如速度入口)
-                A_e(i,j) = 0;
-                Ap_temp += D_e + max(0.0, F_e);
-                source_x_temp += alpha_uv * zoneu[zoneid(i,j+1)] * (D_e + max(0.0, -F_e));
-                source_y_temp += alpha_uv * zonev[zoneid(i,j+1)] * (D_e + max(0.0, -F_e));
+              
+                // 检查东面
+                if(bctype(i,j+1) == 0) {  // 内部点
+                    A_e(i,j) = D_e + max(0.0,-F_e);
+                    Ap_temp += D_e + max(0.0,F_e);
+                    
+                } 
+                else if(bctype(i,j+1) ==-3) {  // 其他边界
+                    A_e(i,j) = D_e + max(0.0,-F_e);
+                    Ap_temp += D_e + max(0.0,F_e);
+                }
+                
+                else if(bctype(i,j+1) > 0) {  // wall边界
+                    A_e(i,j) = 0;
+                    Ap_temp += 2*D_e + max(0.0,F_e);
+                    source_x_temp += alpha_uv*zoneu[zoneid(i,j+1)]*(2*D_e + max(0.0,-F_e));
+                    source_y_temp += alpha_uv*zonev[zoneid(i,j+1)]*(2*D_e + max(0.0,-F_e));
+                } 
+                else if(bctype(i,j+1) ==-1 ) {  // 其他边界
+                    A_e(i,j) = 0;
+                    Ap_temp += D_e + max(0.0,F_e);
+                    source_x_temp += alpha_uv*u_star(i,j)*(D_e + max(0.0,-F_e));  // 移除系数2
+                    source_y_temp += alpha_uv*v_star(i,j)*(D_e + max(0.0,-F_e));  // 移除系数2
+                }
+                else if(bctype(i,j+1) > -10) {  // 其他边界
+                    A_e(i,j) = 0;
+                    Ap_temp += D_e + max(0.0,F_e);  // 移除系数2
+                    source_x_temp += alpha_uv*zoneu[zoneid(i,j+1)]*(D_e + max(0.0,-F_e));  // 移除系数2
+                    source_y_temp += alpha_uv*zonev[zoneid(i,j+1)]*(D_e + max(0.0,-F_e));  // 移除系数2
+                }
+                 
+                // 检查西面
+                if(bctype(i,j-1) == 0) {  // 内部点
+                    A_w(i,j) = D_w + max(0.0,F_w);
+                    Ap_temp += D_w + max(0.0,-F_w);
+                } 
+                else if(bctype(i,j-1) ==-3) {  // 其他边界
+                    A_w(i,j) = D_w + max(0.0,F_w);
+                    Ap_temp += D_w + max(0.0,-F_w);
+                }
+                else if(bctype(i,j-1) ==-1) {  // 其他边界
+                    A_w(i,j) = 0;
+                    Ap_temp += D_w + max(0.0,-F_w);
+                    source_x_temp += alpha_uv*u_star(i,j)*(D_w + max(0.0,F_w));  // 移除系数2
+                    source_y_temp += alpha_uv*v_star(i,j)*(D_w + max(0.0,F_w));  // 移除系数2
+                }
+                else if(bctype(i,j-1) > 0) {  //wall边界
+                    A_w(i,j) = 0;
+                    Ap_temp += 2*D_w + max(0.0,-F_w);
+                    source_x_temp += alpha_uv*zoneu[zoneid(i,j-1)]*(2*D_w + max(0.0,F_w));
+                    source_y_temp += alpha_uv*zonev[zoneid(i,j-1)]*(2*D_w + max(0.0,F_w));
+                } else if(bctype(i,j-1) > -10) {  //其他
+                    A_w(i,j) = 0;
+                    Ap_temp += D_w + max(0.0,-F_w);  // 移除系数2
+                    source_x_temp += alpha_uv*zoneu[zoneid(i,j-1)]*(D_w + max(0.0,F_w));  // 移除系数2
+                    source_y_temp += alpha_uv*zonev[zoneid(i,j-1)]*(D_w + max(0.0,F_w));  // 移除系数2
+                }
+                
+                // 检查北面
+                if(bctype(i-1,j) == 0) {  // 内部点
+                    A_n(i,j) = D_n + max(0.0,-F_n);
+                    Ap_temp += D_n + max(0.0,F_n);
+                } 
+                else if(bctype(i-1,j) == -1) {  // 压力出口
+                    A_n(i,j) = 0;
+                    Ap_temp += D_n + max(0.0,F_n);
+                    source_x_temp += alpha_uv*u_star(i-1,j)*(D_n + max(0.0,-F_n));
+                    source_y_temp += alpha_uv*v_star(i-1,j)*(D_n + max(0.0,-F_n));
+                } 
+               
+                else if(bctype(i-1,j) > 0) {  // wall边界
+                    A_n(i,j) = 0;
+                    Ap_temp += 2*D_n + max(0.0,F_n);
+                    source_x_temp += alpha_uv*zoneu[zoneid(i-1,j)]*(2*D_n + max(0.0,-F_n));
+                    source_y_temp += alpha_uv*zonev[zoneid(i-1,j)]*(2*D_n + max(0.0,-F_n));
+                } else if(bctype(i-1,j) > -10) {  // 其他边界
+                    A_n(i,j) = 0;
+                    Ap_temp += D_n + max(0.0,F_n);  // 移除系数2
+                    source_x_temp += alpha_uv*zoneu[zoneid(i-1,j)]*(D_n + max(0.0,-F_n));  // 移除系数2
+                    source_y_temp += alpha_uv*zonev[zoneid(i-1,j)]*(D_n + max(0.0,-F_n));  // 移除系数2
+                }
+                
+                // 检查南面
+                if(bctype(i+1,j) == 0) {  // 内部点
+                    A_s(i,j) = D_s + max(0.0,F_s);
+                    Ap_temp += D_s + max(0.0,-F_s);
+                }
+                else if(bctype(i+1,j) == -1) {  // 压力出口
+                    A_s(i,j) =0;
+                    Ap_temp += D_s + max(0.0,-F_s);  
+                    source_x_temp += alpha_uv*u_star(i+1,j)*(D_s + max(0.0,F_s));  
+                    source_y_temp += alpha_uv*v_star(i+1,j)*(D_s + max(0.0,F_s));  
+                }
+                 else if(bctype(i+1,j) > 0) {  // wall边界
+                    A_s(i,j) = 0;
+                    Ap_temp += 2*D_s + max(0.0,-F_s);
+                    source_x_temp += alpha_uv*zoneu[zoneid(i+1,j)]*(2*D_s + max(0.0,F_s));
+                    source_y_temp += alpha_uv*zonev[zoneid(i+1,j)]*(2*D_s + max(0.0,F_s));
+                } else if(bctype(i+1,j) > -10) {  // 其他边界
+                    A_s(i,j) = 0;
+                    Ap_temp += D_s + max(0.0,-F_s);  // 移除系数2
+                    source_x_temp += alpha_uv*zoneu[zoneid(i+1,j)]*(D_s + max(0.0,F_s));  // 移除系数2
+                    source_y_temp += alpha_uv*zonev[zoneid(i+1,j)]*(D_s + max(0.0,F_s));  // 移除系数2
+                }
+                
+                A_p(i,j) = Ap_temp;
+                
+                source_x_temp += (1-alpha_uv)*A_p(i,j)*u_star(i,j);
+                source_y_temp += (1-alpha_uv)*A_p(i,j)*v_star(i,j);
+                // 设置源项
+                source_x[n] = source_x_temp;
+                source_y[n] = source_y_temp;
             }
-            
-            // ===== 计算西面系数 =====
-            if(bctype(i,j-1) == 0 || bctype(i,j-1) == -3) {
-                A_w(i,j) = D_w + max(0.0, F_w);
-                Ap_temp += D_w + max(0.0, -F_w);
-            } else if(bctype(i,j-1) == -1) {
-                A_w(i,j) = 0;
-                Ap_temp += D_w + max(0.0, -F_w);
-                source_x_temp += alpha_uv * u_star(i,j) * (D_w + max(0.0, F_w));
-                source_y_temp += alpha_uv * v_star(i,j) * (D_w + max(0.0, F_w));
-            } else if(bctype(i,j-1) > 0) {
-                A_w(i,j) = 0;
-                Ap_temp += 2*D_w + max(0.0, -F_w);
-                source_x_temp += alpha_uv * zoneu[zoneid(i,j-1)] * (2*D_w + max(0.0, F_w));
-                source_y_temp += alpha_uv * zonev[zoneid(i,j-1)] * (2*D_w + max(0.0, F_w));
-            } else if(bctype(i,j-1) > -10) {
-                A_w(i,j) = 0;
-                Ap_temp += D_w + max(0.0, -F_w);
-                source_x_temp += alpha_uv * zoneu[zoneid(i,j-1)] * (D_w + max(0.0, F_w));
-                source_y_temp += alpha_uv * zonev[zoneid(i,j-1)] * (D_w + max(0.0, F_w));
-            }
-            
-            // ===== 计算北面系数 =====
-            if(bctype(i-1,j) == 0) {
-                A_n(i,j) = D_n + max(0.0, -F_n);
-                Ap_temp += D_n + max(0.0, F_n);
-            } else if(bctype(i-1,j) == -1) {
-                A_n(i,j) = 0;
-                Ap_temp += D_n + max(0.0, F_n);
-                source_x_temp += alpha_uv * u_star(i-1,j) * (D_n + max(0.0, -F_n));
-                source_y_temp += alpha_uv * v_star(i-1,j) * (D_n + max(0.0, -F_n));
-            } else if(bctype(i-1,j) > 0) {
-                A_n(i,j) = 0;
-                Ap_temp += 2*D_n + max(0.0, F_n);
-                source_x_temp += alpha_uv * zoneu[zoneid(i-1,j)] * (2*D_n + max(0.0, -F_n));
-                source_y_temp += alpha_uv * zonev[zoneid(i-1,j)] * (2*D_n + max(0.0, -F_n));
-            } else if(bctype(i-1,j) > -10) {
-                A_n(i,j) = 0;
-                Ap_temp += D_n + max(0.0, F_n);
-                source_x_temp += alpha_uv * zoneu[zoneid(i-1,j)] * (D_n + max(0.0, -F_n));
-                source_y_temp += alpha_uv * zonev[zoneid(i-1,j)] * (D_n + max(0.0, -F_n));
-            }
-            
-            // ===== 计算南面系数 =====
-            if(bctype(i+1,j) == 0) {
-                A_s(i,j) = D_s + max(0.0, F_s);
-                Ap_temp += D_s + max(0.0, -F_s);
-            } else if(bctype(i+1,j) == -1) {
-                A_s(i,j) = 0;
-                Ap_temp += D_s + max(0.0, -F_s);
-                source_x_temp += alpha_uv * u(i+1,j) * (D_s + max(0.0, F_s));
-                source_y_temp += alpha_uv * v(i+1,j) * (D_s + max(0.0, F_s));
-            } else if(bctype(i+1,j) > 0) {
-                A_s(i,j) = 0;
-                Ap_temp += 2*D_s + max(0.0, -F_s);
-                source_x_temp += alpha_uv * zoneu[zoneid(i+1,j)] * (2*D_s + max(0.0, F_s));
-                source_y_temp += alpha_uv * zonev[zoneid(i+1,j)] * (2*D_s + max(0.0, F_s));
-            } else if(bctype(i+1,j) > -10) {
-                A_s(i,j) = 0;
-                Ap_temp += D_s + max(0.0, -F_s);
-                source_x_temp += alpha_uv * zoneu[zoneid(i+1,j)] * (D_s + max(0.0, F_s));
-                source_y_temp += alpha_uv * zonev[zoneid(i+1,j)] * (D_s + max(0.0, F_s));
-            }
-            
-            // 设置中心系数
-            A_p(i,j) = Ap_temp;
-            
-            // 添加松弛项: (1-alpha)*A_p*u_old
-            source_x_temp += (1 - alpha_uv) * A_p(i,j) * u_star(i,j);
-            source_y_temp += (1 - alpha_uv) * A_p(i,j) * v_star(i,j);
-            
-            // 设置源项
-            source_x[n] = source_x_temp;
-            source_y[n] = source_y_temp;
         }
     }
 
-    // 应用松弛因子到邻接系数
-    A_e = alpha_uv * A_e;
-    A_w = alpha_uv * A_w;
-    A_n = alpha_uv * A_n;
-    A_s = alpha_uv * A_s;
+    A_e = alpha_uv*A_e;
+    A_w = alpha_uv*A_w;
+    A_n = alpha_uv*A_n;
+    A_s = alpha_uv*A_s;
     
-    // 复制系数到y方向动量方程
+    // 将系数复制到v方程
     equ_v.A_p = equ_u.A_p;
     equ_v.A_w = equ_u.A_w;
     equ_v.A_e = equ_u.A_e;
     equ_v.A_n = equ_u.A_n;
     equ_v.A_s = equ_u.A_s;
+    
 }
 
-// ============================================================================
-// 动量方程离散化 - 非稳态SIMPLE算法
-// ============================================================================
+void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,double dt,double alpha_uv)
+{   
+ //-1 压力出口(给定压强)
+    //-2 固定速度
+    //-3 并行交界面
 
-/**
- * @brief 构建动量方程系数矩阵(非稳态SIMPLE)
- * @param mesh 网格对象
- * @param equ_u x方向动量方程
- * @param equ_v y方向动量方程
- * @param mu 动力粘度
- * @param dt 时间步长
- * @param alpha_uv 速度松弛因子
- * @details
- * 增加时间项: A_p = A_p_稳态 + dx*dy/dt
- * 源项增加: S = S_稳态 + alpha*dx*dy*u0/dt
- */
-void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,
-                               double mu, double dt, double alpha_uv) {
-    int n_x = equ_u.n_x;
-    int n_y = equ_u.n_y;
+    int n,i,j;
+    int n_x=equ_u.n_x;
+    int n_y=equ_u.n_y;
+    double D_e,D_w,D_n,D_s,F_e,F_n,F_s,F_w;
+
     
-    // 计算扩散系数
-    double D_e = dy * mu / dx;  // 东面扩散系数
-    double D_w = dy * mu / dx;  // 西面扩散系数
-    double D_n = dx * mu / dy;  // 北面扩散系数
-    double D_s = dx * mu / dy;  // 南面扩散系数
+    D_e=dy*mu/(dx);
+    D_w=dy*mu/(dx);
+    D_n=dx*mu/(dy);
+    D_s=dx*mu/(dy);
     
-    // 引用网格变量(简化代码)
+    // 引用网格变量
     MatrixXd &zoneid = mesh.zoneid;
     MatrixXd &bctype = mesh.bctype;
-    MatrixXd &u = mesh.u;
-    MatrixXd &v = mesh.v;
-    MatrixXd &u_face = mesh.u_face;
-    MatrixXd &v_face = mesh.v_face;
-    MatrixXd &p = mesh.p;
-    MatrixXd &u_star = mesh.u_star;
-    MatrixXd &v_star = mesh.v_star;
-    MatrixXd &A_p = equ_u.A_p;
-    MatrixXd &A_e = equ_u.A_e;
-    MatrixXd &A_w = equ_u.A_w;
-    MatrixXd &A_n = equ_u.A_n;
-    MatrixXd &A_s = equ_u.A_s;
-    VectorXd &source_x = equ_u.source;
-    VectorXd &source_y = equ_v.source;
-    vector<double> zoneu = mesh.zoneu;
-    vector<double> zonev = mesh.zonev;
+    MatrixXd &u= mesh.u;
+    MatrixXd &v= mesh.v;
+    MatrixXd &u_face= mesh.u_face;
+    MatrixXd &v_face= mesh.v_face;
+    MatrixXd &p= mesh.p;
+    MatrixXd &p_star= mesh.p_star;
+    MatrixXd &p_prime= mesh.p_prime;
+    MatrixXd &u_star= mesh.u_star;
+    MatrixXd &v_star= mesh.v_star;
+    MatrixXd &A_p=equ_u.A_p;
+    MatrixXd &A_e=equ_u.A_e;
+    MatrixXd &A_w=equ_u.A_w;
+    MatrixXd &A_n=equ_u.A_n;
+    MatrixXd &A_s=equ_u.A_s;
+    VectorXd &source_x=equ_u.source;
+    VectorXd &source_y=equ_v.source;
+    vector<double> zoneu=mesh.zoneu;
+    vector<double> zonev=mesh.zonev;
     
-    // 遍历所有内部点
-    for(int i = 0; i <= n_y+1; i++) {
-        for(int j = 0; j <= n_x+1; j++) {
-            if(bctype(i,j) != 0) continue;  // 跳过边界点
-            
-            int n = mesh.interid(i,j) ;  // 方程编号
-            
-            // 计算各面的对流通量
-            double F_e = dy * u_face(i,j);      // 东面通量
-            double F_w = dy * u_face(i,j-1);    // 西面通量
-            double F_n = dx * v_face(i-1,j);    // 北面通量
-            double F_s = dx * v_face(i,j);      // 南面通量
-            
-            double Ap_temp = 0;
-            double source_x_temp = 0, source_y_temp = 0;
-            
-            // ===== 计算压力源项 =====
-            // x方向压力梯度
-            if((bctype(i,j-1) == 0 || bctype(i,j-1) == -3) && 
-               (bctype(i,j+1) == 0 || bctype(i,j+1) == -3)) {
-                // 两侧都是内部点,使用中心差分
-                source_x_temp = 0.5  * (p(i,j-1) - p(i,j+1)) * dy;
+    // 遍历网格
+    for(i=0; i<=n_y+1; i++) {
+        for(j=0; j<=n_x+1; j++) {
+            if(bctype(i,j) == 0) {  // 内部面
+                n = mesh.interid(i,j) ;
+                
+                // 计算面上流量
+                F_e = dy*u_face(i,j);
+                F_w = dy*u_face(i,j-1);
+                F_n = dx*v_face(i-1,j);
+                F_s = dx*v_face(i,j);
+                
+                double Ap_temp = 0;
+               // 初始化源项
+               double source_x_temp, source_y_temp;
+    
+                           // 处理 x 方向源项
+            if((bctype(i,j-1) == 0 ||  bctype(i,j-1) == -3) && 
+               (bctype(i,j+1) == 0 ||  bctype(i,j+1) == -3)) {
+                // 两侧都是内部点或滑移边界，使用中心差分
+                source_x_temp = 0.5*(p(i,j-1)-p(i,j+1))*dy;
+                
             } else if(bctype(i,j-1) == -1) {
-                // 左侧是压力出口(p=0)
-                source_x_temp = 0.5  * (-p(i,j+1)) * dy;
+                // 左边是压力为0的边界
+                source_x_temp = 0.5*(-p(i,j+1))*dy;
             } else if(bctype(i,j+1) == -1) {
-                // 右侧是压力出口
-                source_x_temp = 0.5  * p(i,j-1) * dy;
+                // 右边是压力为0的边界
+                source_x_temp = 0.5*(p(i,j-1))*dy;
             } else if(bctype(i,j-1) == -2) {
-                // 左侧是速度入口
-                source_x_temp = 0.5  * (p(i,j) - p(i,j+1)) * dy;
+                // 左边是速度入口
+                source_x_temp = 0.5*(p(i,j)-p(i,j+1))*dy;
             } else if(bctype(i,j+1) == -2) {
-                // 右侧是速度入口
-                source_x_temp = 0.5  * (p(i,j-1) - p(i,j)) * dy;
+                // 右边是速度入口
+                source_x_temp = 0.5*(p(i,j-1)-p(i,j))*dy;
             } else if(bctype(i,j-1) != 0 && bctype(i,j+1) == 0) {
-                // 左边界,右内部
-                source_x_temp = 0.5 * (p(i,j) - p(i,j+1)) * dy;
+                // 左边是其他边界，右边是内部点
+                source_x_temp = 0.5*(p(i,j)-p(i,j+1))*dy;
             } else if(bctype(i,j-1) == 0 && bctype(i,j+1) != 0) {
-                // 左内部,右边界
-                source_x_temp = 0.5 * (p(i,j-1) - p(i,j)) * dy;
+                // 左边是内部点，右边是其他边界
+                source_x_temp = 0.5*(p(i,j-1)-p(i,j))*dy;
             } else {
-                source_x_temp = 0.0;
+                // 两边都是固定边界或其他情况
+                source_x_temp = 0.0; 
             }
             
-            // y方向压力梯度(类似处理)
-            if((bctype(i-1,j) == 0 || bctype(i-1,j) == -3) && 
-               (bctype(i+1,j) == 0 || bctype(i+1,j) == -3)) {
-                source_y_temp = 0.5  * (p(i+1,j) - p(i-1,j)) * dx;
+            // 处理 y 方向源项
+            if((bctype(i-1,j) == 0 ||  bctype(i-1,j) == -3) && 
+               (bctype(i+1,j) == 0 ||  bctype(i+1,j) == -3)) {
+                // 上下都是内部点或滑移边界，使用中心差分
+                source_y_temp = 0.5*(p(i+1,j)-p(i-1,j))*dx;
+                
             } else if(bctype(i-1,j) == -1) {
-                source_y_temp = 0.5 * p(i+1,j) * dx;
+                // 上边是压力为0的边界
+                source_y_temp = 0.5*(p(i+1,j))*dx;
+                
             } else if(bctype(i+1,j) == -1) {
-                source_y_temp = 0.5  * (-p(i-1,j)) * dx;
+                // 下边是压力为0的边界  压力出口
+                source_y_temp = 0.5*(-p(i-1,j))*dx;
             } else if(bctype(i-1,j) == -2) {
-                source_y_temp = 0.5  * (p(i+1,j) - p(i,j)) * dx;
+                // 上边是压力为0的边界
+                source_y_temp = 0.5*(p(i+1,j)-p(i,j))*dx;
+                
             } else if(bctype(i+1,j) == -2) {
-                source_y_temp = 0.5  * (p(i,j) - p(i-1,j)) * dx;
+                // 下边是压力为0的边界
+                source_y_temp = 0.5*(p(i,j)-p(i-1,j))*dx;
             } else if(bctype(i-1,j) != 0 && bctype(i+1,j) == 0) {
-                source_y_temp = 0.5  * (p(i+1,j) - p(i,j)) * dx;
+                // 上边是其他边界，下边是内部点
+                source_y_temp = 0.5*(p(i+1,j)-p(i,j))*dx;
             } else if(bctype(i-1,j) == 0 && bctype(i+1,j) != 0) {
-                source_y_temp = 0.5  * (p(i,j) - p(i-1,j)) * dx;
+                // 上边是内部点，下边是其他边界
+                source_y_temp = 0.5*(p(i,j)-p(i-1,j))*dx;
             } else {
+                // 上下都是固定边界或其他情况
                 source_y_temp = 0.0;
             }
-            
-            // ===== 计算东面系数 =====
-            if(bctype(i,j+1) == 0 || bctype(i,j+1) == -3) {
-                // 东邻是内部点或并行接口
-                A_e(i,j) = D_e + max(0.0, -F_e);  // 混合格式
-                Ap_temp += D_e + max(0.0, F_e);
-            } else if(bctype(i,j+1) > 0) {
-                // 东邻是固壁(无滑移边界)
-                A_e(i,j) = 0;
-                Ap_temp += 2*D_e + max(0.0, F_e);
-                source_x_temp += zoneu[zoneid(i,j+1)] * (2*D_e + max(0.0, -F_e));
-                source_y_temp +=  zonev[zoneid(i,j+1)] * (2*D_e + max(0.0, -F_e));
-            } else if(bctype(i,j+1) == -1) {
-                // 东邻是压力出口
-                A_e(i,j) = 0;
-                Ap_temp += D_e + max(0.0, F_e);
-                source_x_temp += u_star(i,j) * (D_e + max(0.0, -F_e));
-                source_y_temp +=  v_star(i,j) * (D_e + max(0.0, -F_e));
-            } else if(bctype(i,j+1) > -10) {
-                // 东邻是其他边界(如速度入口)
-                A_e(i,j) = 0;
-                Ap_temp += D_e + max(0.0, F_e);
-                source_x_temp +=  zoneu[zoneid(i,j+1)] * (D_e + max(0.0, -F_e));
-                source_y_temp +=  zonev[zoneid(i,j+1)] * (D_e + max(0.0, -F_e));
+              
+                // 检查东面
+                if(bctype(i,j+1) == 0) {  // 内部点
+                    A_e(i,j) = D_e + max(0.0,-F_e);
+                    Ap_temp += D_e + max(0.0,F_e);
+                    
+                } 
+                else if(bctype(i,j+1) ==-3) {  // 其他边界
+                    A_e(i,j) = D_e + max(0.0,-F_e);
+                    Ap_temp += D_e + max(0.0,F_e);
+                }
+                
+                else if(bctype(i,j+1) > 0) {  // wall边界
+                    A_e(i,j) = 0;
+                    Ap_temp += 2*D_e + max(0.0,F_e);
+                    source_x_temp += zoneu[zoneid(i,j+1)]*(2*D_e + max(0.0,-F_e));
+                    source_y_temp += zonev[zoneid(i,j+1)]*(2*D_e + max(0.0,-F_e));
+                } 
+                else if(bctype(i,j+1) ==-1 ) {  // 其他边界
+                    A_e(i,j) = 0;
+                    Ap_temp += D_e + max(0.0,F_e);
+                    source_x_temp += u_star(i,j)*(D_e + max(0.0,-F_e));  // 移除系数2
+                    source_y_temp += v_star(i,j)*(D_e + max(0.0,-F_e));  // 移除系数2
+                }
+                else if(bctype(i,j+1) > -10) {  // 其他边界
+                    A_e(i,j) = 0;
+                    Ap_temp += D_e + max(0.0,F_e);  // 移除系数2
+                    source_x_temp += zoneu[zoneid(i,j+1)]*(D_e + max(0.0,-F_e));  // 移除系数2
+                    source_y_temp += zonev[zoneid(i,j+1)]*(D_e + max(0.0,-F_e));  // 移除系数2
+                }
+                 
+                // 检查西面
+                if(bctype(i,j-1) == 0) {  // 内部点
+                    A_w(i,j) = D_w + max(0.0,F_w);
+                    Ap_temp += D_w + max(0.0,-F_w);
+                } 
+                else if(bctype(i,j-1) ==-3) {  // 其他边界
+                    A_w(i,j) = D_w + max(0.0,F_w);
+                    Ap_temp += D_w + max(0.0,-F_w);
+                }
+                else if(bctype(i,j-1) ==-1) {  // 其他边界
+                    A_w(i,j) = 0;
+                    Ap_temp += D_w + max(0.0,-F_w);
+                    source_x_temp += u_star(i,j)*(D_w + max(0.0,F_w));  // 移除系数2
+                    source_y_temp += v_star(i,j)*(D_w + max(0.0,F_w));  // 移除系数2
+                }
+                else if(bctype(i,j-1) > 0) {  //wall边界
+                    A_w(i,j) = 0;
+                    Ap_temp += 2*D_w + max(0.0,-F_w);
+                    source_x_temp += zoneu[zoneid(i,j-1)]*(2*D_w + max(0.0,F_w));
+                    source_y_temp += zonev[zoneid(i,j-1)]*(2*D_w + max(0.0,F_w));
+                } else if(bctype(i,j-1) > -10) {  //其他
+                    A_w(i,j) = 0;
+                    Ap_temp += D_w + max(0.0,-F_w);  // 移除系数2
+                    source_x_temp += zoneu[zoneid(i,j-1)]*(D_w + max(0.0,F_w));  // 移除系数2
+                    source_y_temp += zonev[zoneid(i,j-1)]*(D_w + max(0.0,F_w));  // 移除系数2
+                }
+                
+                // 检查北面
+                if(bctype(i-1,j) == 0) {  // 内部点
+                    A_n(i,j) = D_n + max(0.0,-F_n);
+                    Ap_temp += D_n + max(0.0,F_n);
+                } 
+                else if(bctype(i-1,j) == -1) {  // 压力出口
+                    A_n(i,j) = 0;
+                    Ap_temp += D_n + max(0.0,F_n);
+                    source_x_temp += u_star(i-1,j)*(D_n + max(0.0,-F_n));
+                    source_y_temp += v_star(i-1,j)*(D_n + max(0.0,-F_n));
+                } 
+               
+                else if(bctype(i-1,j) > 0) {  // wall边界
+                    A_n(i,j) = 0;
+                    Ap_temp += 2*D_n + max(0.0,F_n);
+                    source_x_temp += zoneu[zoneid(i-1,j)]*(2*D_n + max(0.0,-F_n));
+                    source_y_temp += zonev[zoneid(i-1,j)]*(2*D_n + max(0.0,-F_n));
+                } else if(bctype(i-1,j) > -10) {  // 其他边界
+                    A_n(i,j) = 0;
+                    Ap_temp += D_n + max(0.0,F_n);  // 移除系数2
+                    source_x_temp += zoneu[zoneid(i-1,j)]*(D_n + max(0.0,-F_n));  // 移除系数2
+                    source_y_temp += zonev[zoneid(i-1,j)]*(D_n + max(0.0,-F_n));  // 移除系数2
+                }
+                
+                // 检查南面
+                if(bctype(i+1,j) == 0) {  // 内部点
+                    A_s(i,j) = D_s + max(0.0,F_s);
+                    Ap_temp += D_s + max(0.0,-F_s);
+                }
+                else if(bctype(i+1,j) == -1) {  // 压力出口
+                    A_s(i,j) =0;
+                    Ap_temp += D_s + max(0.0,-F_s);  
+                    source_x_temp += u_star(i+1,j)*(D_s + max(0.0,F_s));  
+                    source_y_temp += v_star(i+1,j)*(D_s + max(0.0,F_s));  
+                }
+                 else if(bctype(i+1,j) > 0) {  // wall边界
+                    A_s(i,j) = 0;
+                    Ap_temp += 2*D_s + max(0.0,-F_s);
+                    source_x_temp += zoneu[zoneid(i+1,j)]*(2*D_s + max(0.0,F_s));
+                    source_y_temp += zonev[zoneid(i+1,j)]*(2*D_s + max(0.0,F_s));
+                } else if(bctype(i+1,j) > -10) {  // 其他边界
+                    A_s(i,j) = 0;
+                    Ap_temp += D_s + max(0.0,-F_s);  // 移除系数2
+                    source_x_temp += zoneu[zoneid(i+1,j)]*(D_s + max(0.0,F_s));  // 移除系数2
+                    source_y_temp += zonev[zoneid(i+1,j)]*(D_s + max(0.0,F_s));  // 移除系数2
+                }
+                
+                A_p(i,j) = Ap_temp+dx*dy/dt;
+                
+                source_x_temp += dx*dy*mesh.u0(i,j)/dt;
+                source_y_temp += dx*dy*mesh.v0(i,j)/dt;
+                // 设置源项
+                source_x[n] = source_x_temp;
+                source_y[n] = source_y_temp;
             }
-            
-            // ===== 计算西面系数 =====
-            if(bctype(i,j-1) == 0 || bctype(i,j-1) == -3) {
-                A_w(i,j) = D_w + max(0.0, F_w);
-                Ap_temp += D_w + max(0.0, -F_w);
-            } else if(bctype(i,j-1) == -1) {
-                A_w(i,j) = 0;
-                Ap_temp += D_w + max(0.0, -F_w);
-                source_x_temp +=  u_star(i,j) * (D_w + max(0.0, F_w));
-                source_y_temp +=  v_star(i,j) * (D_w + max(0.0, F_w));
-            } else if(bctype(i,j-1) > 0) {
-                A_w(i,j) = 0;
-                Ap_temp += 2*D_w + max(0.0, -F_w);
-                source_x_temp +=  zoneu[zoneid(i,j-1)] * (2*D_w + max(0.0, F_w));
-                source_y_temp +=  zonev[zoneid(i,j-1)] * (2*D_w + max(0.0, F_w));
-            } else if(bctype(i,j-1) > -10) {
-                A_w(i,j) = 0;
-                Ap_temp += D_w + max(0.0, -F_w);
-                source_x_temp +=  zoneu[zoneid(i,j-1)] * (D_w + max(0.0, F_w));
-                source_y_temp +=  zonev[zoneid(i,j-1)] * (D_w + max(0.0, F_w));
-            }
-            
-            // ===== 计算北面系数 =====
-            if(bctype(i-1,j) == 0) {
-                A_n(i,j) = D_n + max(0.0, -F_n);
-                Ap_temp += D_n + max(0.0, F_n);
-            } else if(bctype(i-1,j) == -1) {
-                A_n(i,j) = 0;
-                Ap_temp += D_n + max(0.0, F_n);
-                source_x_temp +=  u_star(i-1,j) * (D_n + max(0.0, -F_n));
-                source_y_temp +=  v_star(i-1,j) * (D_n + max(0.0, -F_n));
-            } else if(bctype(i-1,j) > 0) {
-                A_n(i,j) = 0;
-                Ap_temp += 2*D_n + max(0.0, F_n);
-                source_x_temp +=  zoneu[zoneid(i-1,j)] * (2*D_n + max(0.0, -F_n));
-                source_y_temp +=  zonev[zoneid(i-1,j)] * (2*D_n + max(0.0, -F_n));
-            } else if(bctype(i-1,j) > -10) {
-                A_n(i,j) = 0;
-                Ap_temp += D_n + max(0.0, F_n);
-                source_x_temp +=  zoneu[zoneid(i-1,j)] * (D_n + max(0.0, -F_n));
-                source_y_temp +=  zonev[zoneid(i-1,j)] * (D_n + max(0.0, -F_n));
-            }
-            
-            // ===== 计算南面系数 =====
-            if(bctype(i+1,j) == 0) {
-                A_s(i,j) = D_s + max(0.0, F_s);
-                Ap_temp += D_s + max(0.0, -F_s);
-            } else if(bctype(i+1,j) == -1) {
-                A_s(i,j) = 0;
-                Ap_temp += D_s + max(0.0, -F_s);
-                source_x_temp +=  u(i+1,j) * (D_s + max(0.0, F_s));
-                source_y_temp +=  v(i+1,j) * (D_s + max(0.0, F_s));
-            } else if(bctype(i+1,j) > 0) {
-                A_s(i,j) = 0;
-                Ap_temp += 2*D_s + max(0.0, -F_s);
-                source_x_temp +=  zoneu[zoneid(i+1,j)] * (2*D_s + max(0.0, F_s));
-                source_y_temp +=  zonev[zoneid(i+1,j)] * (2*D_s + max(0.0, F_s));
-            } else if(bctype(i+1,j) > -10) {
-                A_s(i,j) = 0;
-                Ap_temp += D_s + max(0.0, -F_s);
-                source_x_temp +=  zoneu[zoneid(i+1,j)] * (D_s + max(0.0, F_s));
-                source_y_temp +=  zonev[zoneid(i+1,j)] * (D_s + max(0.0, F_s));
-            }
-            
-            // 关键区别: 添加时间项到中心系数
-            A_p(i,j) = Ap_temp + dx*dy/dt;
-            
-            // 关键区别: 源项添加旧时间步项
-            source_x_temp +=  dx*dy * mesh.u0(i,j) / dt;
-            source_y_temp +=  dx*dy * mesh.v0(i,j) / dt;
-            
-            // 设置源项
-            source_x[n] = source_x_temp;
-            source_y[n] = source_y_temp;
         }
     }
 
-    // 应用松弛因子到邻接系数
     A_e = A_e;
     A_w = A_w;
     A_n = A_n;
     A_s = A_s;
     
-    // 复制系数到y方向动量方程
+    // 将系数复制到v方程
     equ_v.A_p = equ_u.A_p;
     equ_v.A_w = equ_u.A_w;
     equ_v.A_e = equ_u.A_e;
     equ_v.A_n = equ_u.A_n;
     equ_v.A_s = equ_u.A_s;
-   
+    
 }
 
-// ============================================================================
-// 动量方程离散化 - PISO算法
-// ============================================================================
+void momentum_function_PISO(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,double dt)
+{   
+    //-1 压力出口(给定压强)
+    //-2 固定速度
+    //-3 并行交界面
 
-/**
- * @brief 构建动量方程系数矩阵(PISO算法)
- * @param mesh 网格对象
- * @param equ_u x方向动量方程
- * @param equ_v y方向动量方程
- * @param mu 动力粘度
- * @param dt 时间步长
- * @details
- * PISO算法特点: 不使用速度松弛(alpha_uv=1.0)
- * 时间离散: 隐式欧拉格式
- */
-void momentum_function_PISO(Mesh &mesh, Equation &equ_u, Equation &equ_v,
-                            double mu, double dt) {
-    int n_x = equ_u.n_x;
-    int n_y = equ_u.n_y;
+    int n,i,j;
+    int n_x=equ_u.n_x;
+    int n_y=equ_u.n_y;
+    double D_e,D_w,D_n,D_s,F_e,F_n,F_s,F_w;
+
     
-    // 计算扩散系数
-    double D_e = dy * mu / dx;  // 东面扩散系数
-    double D_w = dy * mu / dx;  // 西面扩散系数
-    double D_n = dx * mu / dy;  // 北面扩散系数
-    double D_s = dx * mu / dy;  // 南面扩散系数
+    D_e=dy*mu/(dx);
+    D_w=dy*mu/(dx);
+    D_n=dx*mu/(dy);
+    D_s=dx*mu/(dy);
     
-    // 引用网格变量(简化代码)
+    // 引用网格变量
     MatrixXd &zoneid = mesh.zoneid;
     MatrixXd &bctype = mesh.bctype;
-    MatrixXd &u = mesh.u;
-    MatrixXd &v = mesh.v;
-    MatrixXd &u_face = mesh.u_face;
-    MatrixXd &v_face = mesh.v_face;
-    MatrixXd &p = mesh.p;
-    MatrixXd &u_star = mesh.u_star;
-    MatrixXd &v_star = mesh.v_star;
-    MatrixXd &A_p = equ_u.A_p;
-    MatrixXd &A_e = equ_u.A_e;
-    MatrixXd &A_w = equ_u.A_w;
-    MatrixXd &A_n = equ_u.A_n;
-    MatrixXd &A_s = equ_u.A_s;
-    VectorXd &source_x = equ_u.source;
-    VectorXd &source_y = equ_v.source;
-    vector<double> zoneu = mesh.zoneu;
-    vector<double> zonev = mesh.zonev;
+    MatrixXd &u= mesh.u;
+    MatrixXd &v= mesh.v;
+    MatrixXd &u_face= mesh.u_face;
+    MatrixXd &v_face= mesh.v_face;
+    MatrixXd &p= mesh.p;
+    MatrixXd &p_star= mesh.p_star;
+    MatrixXd &p_prime= mesh.p_prime;
+    MatrixXd &u_star= mesh.u_star;
+    MatrixXd &v_star= mesh.v_star;
+    MatrixXd &A_p=equ_u.A_p;
+    MatrixXd &A_e=equ_u.A_e;
+    MatrixXd &A_w=equ_u.A_w;
+    MatrixXd &A_n=equ_u.A_n;
+    MatrixXd &A_s=equ_u.A_s;
+    VectorXd &source_x=equ_u.source;
+    VectorXd &source_y=equ_v.source;
+    vector<double> zoneu=mesh.zoneu;
+    vector<double> zonev=mesh.zonev;
     
-    // 遍历所有内部点
-    for(int i = 0; i <= n_y+1; i++) {
-        for(int j = 0; j <= n_x+1; j++) {
-            if(bctype(i,j) != 0) continue;  // 跳过边界点
-            
-            int n = mesh.interid(i,j) ;  // 方程编号
-            
-            // 计算各面的对流通量
-            double F_e = dy * u_face(i,j);      // 东面通量
-            double F_w = dy * u_face(i,j-1);    // 西面通量
-            double F_n = dx * v_face(i-1,j);    // 北面通量
-            double F_s = dx * v_face(i,j);      // 南面通量
-            
-            double Ap_temp = 0;
-            double source_x_temp = 0, source_y_temp = 0;
-            
-            // ===== 计算压力源项 =====
-            // x方向压力梯度
-            if((bctype(i,j-1) == 0 || bctype(i,j-1) == -3) && 
-               (bctype(i,j+1) == 0 || bctype(i,j+1) == -3)) {
-                // 两侧都是内部点,使用中心差分
-                source_x_temp = 0.5  * (p(i,j-1) - p(i,j+1)) * dy;
+    // 遍历网格
+    for(i=0; i<=n_y+1; i++) {
+        for(j=0; j<=n_x+1; j++) {
+            if(bctype(i,j) == 0) {  // 内部面
+                n = mesh.interid(i,j) ;
+                
+                // 计算面上流量
+                F_e = dy*u_face(i,j);
+                F_w = dy*u_face(i,j-1);
+                F_n = dx*v_face(i-1,j);
+                F_s = dx*v_face(i,j);
+                
+                double Ap_temp = 0;
+               // 初始化源项
+               double source_x_temp, source_y_temp;
+    
+                           // 处理 x 方向源项
+            if((bctype(i,j-1) == 0 ||  bctype(i,j-1) == -3) && 
+               (bctype(i,j+1) == 0 ||  bctype(i,j+1) == -3)) {
+                // 两侧都是内部点或滑移边界，使用中心差分
+                source_x_temp = 0.5*(p(i,j-1)-p(i,j+1))*dy;
+                
             } else if(bctype(i,j-1) == -1) {
-                // 左侧是压力出口(p=0)
-                source_x_temp = 0.5  * (-p(i,j+1)) * dy;
+                // 左边是压力为0的边界
+                source_x_temp = 0.5*(-p(i,j+1))*dy;
             } else if(bctype(i,j+1) == -1) {
-                // 右侧是压力出口
-                source_x_temp = 0.5  * p(i,j-1) * dy;
+                // 右边是压力为0的边界
+                source_x_temp = 0.5*(p(i,j-1))*dy;
             } else if(bctype(i,j-1) == -2) {
-                // 左侧是速度入口
-                source_x_temp = 0.5  * (p(i,j) - p(i,j+1)) * dy;
+                // 左边是速度入口
+                source_x_temp = 0.5*(p(i,j)-p(i,j+1))*dy;
             } else if(bctype(i,j+1) == -2) {
-                // 右侧是速度入口
-                source_x_temp = 0.5  * (p(i,j-1) - p(i,j)) * dy;
+                // 右边是速度入口
+                source_x_temp = 0.5*(p(i,j-1)-p(i,j))*dy;
             } else if(bctype(i,j-1) != 0 && bctype(i,j+1) == 0) {
-                // 左边界,右内部
-                source_x_temp = 0.5 * (p(i,j) - p(i,j+1)) * dy;
+                // 左边是其他边界，右边是内部点
+                source_x_temp = 0.5*(p(i,j)-p(i,j+1))*dy;
             } else if(bctype(i,j-1) == 0 && bctype(i,j+1) != 0) {
-                // 左内部,右边界
-                source_x_temp = 0.5 * (p(i,j-1) - p(i,j)) * dy;
+                // 左边是内部点，右边是其他边界
+                source_x_temp = 0.5*(p(i,j-1)-p(i,j))*dy;
             } else {
-                source_x_temp = 0.0;
+                // 两边都是固定边界或其他情况
+                source_x_temp = 0.0; 
             }
             
-            // y方向压力梯度(类似处理)
-            if((bctype(i-1,j) == 0 || bctype(i-1,j) == -3) && 
-               (bctype(i+1,j) == 0 || bctype(i+1,j) == -3)) {
-                source_y_temp = 0.5  * (p(i+1,j) - p(i-1,j)) * dx;
+            // 处理 y 方向源项
+            if((bctype(i-1,j) == 0 ||  bctype(i-1,j) == -3) && 
+               (bctype(i+1,j) == 0 ||  bctype(i+1,j) == -3)) {
+                // 上下都是内部点或滑移边界，使用中心差分
+                source_y_temp = 0.5*(p(i+1,j)-p(i-1,j))*dx;
+                
             } else if(bctype(i-1,j) == -1) {
-                source_y_temp = 0.5 * p(i+1,j) * dx;
+                // 上边是压力为0的边界
+                source_y_temp = 0.5*(p(i+1,j))*dx;
+                
             } else if(bctype(i+1,j) == -1) {
-                source_y_temp = 0.5  * (-p(i-1,j)) * dx;
+                // 下边是压力为0的边界  压力出口
+                source_y_temp = 0.5*(-p(i-1,j))*dx;
             } else if(bctype(i-1,j) == -2) {
-                source_y_temp = 0.5  * (p(i+1,j) - p(i,j)) * dx;
+                // 上边是压力为0的边界
+                source_y_temp = 0.5*(p(i+1,j)-p(i,j))*dx;
+                
             } else if(bctype(i+1,j) == -2) {
-                source_y_temp = 0.5  * (p(i,j) - p(i-1,j)) * dx;
+                // 下边是压力为0的边界
+                source_y_temp = 0.5*(p(i,j)-p(i-1,j))*dx;
             } else if(bctype(i-1,j) != 0 && bctype(i+1,j) == 0) {
-                source_y_temp = 0.5  * (p(i+1,j) - p(i,j)) * dx;
+                // 上边是其他边界，下边是内部点
+                source_y_temp = 0.5*(p(i+1,j)-p(i,j))*dx;
             } else if(bctype(i-1,j) == 0 && bctype(i+1,j) != 0) {
-                source_y_temp = 0.5  * (p(i,j) - p(i-1,j)) * dx;
+                // 上边是内部点，下边是其他边界
+                source_y_temp = 0.5*(p(i,j)-p(i-1,j))*dx;
             } else {
+                // 上下都是固定边界或其他情况
                 source_y_temp = 0.0;
             }
-            
-            // ===== 计算东面系数 =====
-            if(bctype(i,j+1) == 0 || bctype(i,j+1) == -3) {
-                // 东邻是内部点或并行接口
-                A_e(i,j) = D_e + max(0.0, -F_e);  // 混合格式
-                Ap_temp += D_e + max(0.0, F_e);
-            } else if(bctype(i,j+1) > 0) {
-                // 东邻是固壁(无滑移边界)
-                A_e(i,j) = 0;
-                Ap_temp += 2*D_e + max(0.0, F_e);
-                source_x_temp += zoneu[zoneid(i,j+1)] * (2*D_e + max(0.0, -F_e));
-                source_y_temp +=  zonev[zoneid(i,j+1)] * (2*D_e + max(0.0, -F_e));
-            } else if(bctype(i,j+1) == -1) {
-                // 东邻是压力出口
-                A_e(i,j) = 0;
-                Ap_temp += D_e + max(0.0, F_e);
-                source_x_temp += u_star(i,j) * (D_e + max(0.0, -F_e));
-                source_y_temp +=  v_star(i,j) * (D_e + max(0.0, -F_e));
-            } else if(bctype(i,j+1) > -10) {
-                // 东邻是其他边界(如速度入口)
-                A_e(i,j) = 0;
-                Ap_temp += D_e + max(0.0, F_e);
-                source_x_temp +=  zoneu[zoneid(i,j+1)] * (D_e + max(0.0, -F_e));
-                source_y_temp +=  zonev[zoneid(i,j+1)] * (D_e + max(0.0, -F_e));
+              
+                // 检查东面
+                if(bctype(i,j+1) == 0) {  // 内部点
+                    A_e(i,j) = D_e + max(0.0,-F_e);
+                    Ap_temp += D_e + max(0.0,F_e);
+                    
+                } 
+                else if(bctype(i,j+1) ==-3) {  // 其他边界
+                    A_e(i,j) = D_e + max(0.0,-F_e);
+                    Ap_temp += D_e + max(0.0,F_e);
+                }
+                
+                else if(bctype(i,j+1) > 0) {  // wall边界
+                    A_e(i,j) = 0;
+                    Ap_temp += 2*D_e + max(0.0,F_e);
+                    source_x_temp += zoneu[zoneid(i,j+1)]*(2*D_e + max(0.0,-F_e));
+                    source_y_temp += zonev[zoneid(i,j+1)]*(2*D_e + max(0.0,-F_e));
+                } 
+                else if(bctype(i,j+1) ==-1 ) {  // 其他边界
+                    A_e(i,j) = 0;
+                    Ap_temp += D_e + max(0.0,F_e);
+                    source_x_temp += u_star(i,j)*(D_e + max(0.0,-F_e));  // 移除系数2
+                    source_y_temp += v_star(i,j)*(D_e + max(0.0,-F_e));  // 移除系数2
+                }
+                else if(bctype(i,j+1) > -10) {  // 其他边界
+                    A_e(i,j) = 0;
+                    Ap_temp += D_e + max(0.0,F_e);  // 移除系数2
+                    source_x_temp += zoneu[zoneid(i,j+1)]*(D_e + max(0.0,-F_e));  // 移除系数2
+                    source_y_temp += zonev[zoneid(i,j+1)]*(D_e + max(0.0,-F_e));  // 移除系数2
+                }
+                 
+                // 检查西面
+                if(bctype(i,j-1) == 0) {  // 内部点
+                    A_w(i,j) = D_w + max(0.0,F_w);
+                    Ap_temp += D_w + max(0.0,-F_w);
+                } 
+                else if(bctype(i,j-1) ==-3) {  // 其他边界
+                    A_w(i,j) = D_w + max(0.0,F_w);
+                    Ap_temp += D_w + max(0.0,-F_w);
+                }
+                else if(bctype(i,j-1) ==-1) {  // 其他边界
+                    A_w(i,j) = 0;
+                    Ap_temp += D_w + max(0.0,-F_w);
+                    source_x_temp += u_star(i,j)*(D_w + max(0.0,F_w));  // 移除系数2
+                    source_y_temp += v_star(i,j)*(D_w + max(0.0,F_w));  // 移除系数2
+                }
+                else if(bctype(i,j-1) > 0) {  //wall边界
+                    A_w(i,j) = 0;
+                    Ap_temp += 2*D_w + max(0.0,-F_w);
+                    source_x_temp += zoneu[zoneid(i,j-1)]*(2*D_w + max(0.0,F_w));
+                    source_y_temp += zonev[zoneid(i,j-1)]*(2*D_w + max(0.0,F_w));
+                } else if(bctype(i,j-1) > -10) {  //其他
+                    A_w(i,j) = 0;
+                    Ap_temp += D_w + max(0.0,-F_w);  // 移除系数2
+                    source_x_temp += zoneu[zoneid(i,j-1)]*(D_w + max(0.0,F_w));  // 移除系数2
+                    source_y_temp += zonev[zoneid(i,j-1)]*(D_w + max(0.0,F_w));  // 移除系数2
+                }
+                
+                // 检查北面
+                if(bctype(i-1,j) == 0) {  // 内部点
+                    A_n(i,j) = D_n + max(0.0,-F_n);
+                    Ap_temp += D_n + max(0.0,F_n);
+                } 
+                else if(bctype(i-1,j) == -1) {  // 压力出口
+                    A_n(i,j) = 0;
+                    Ap_temp += D_n + max(0.0,F_n);
+                    source_x_temp += u_star(i-1,j)*(D_n + max(0.0,-F_n));
+                    source_y_temp += v_star(i-1,j)*(D_n + max(0.0,-F_n));
+                } 
+               
+                else if(bctype(i-1,j) > 0) {  // wall边界
+                    A_n(i,j) = 0;
+                    Ap_temp += 2*D_n + max(0.0,F_n);
+                    source_x_temp += zoneu[zoneid(i-1,j)]*(2*D_n + max(0.0,-F_n));
+                    source_y_temp += zonev[zoneid(i-1,j)]*(2*D_n + max(0.0,-F_n));
+                } else if(bctype(i-1,j) > -10) {  // 其他边界
+                    A_n(i,j) = 0;
+                    Ap_temp += D_n + max(0.0,F_n);  // 移除系数2
+                    source_x_temp += zoneu[zoneid(i-1,j)]*(D_n + max(0.0,-F_n));  // 移除系数2
+                    source_y_temp += zonev[zoneid(i-1,j)]*(D_n + max(0.0,-F_n));  // 移除系数2
+                }
+                
+                // 检查南面
+                if(bctype(i+1,j) == 0) {  // 内部点
+                    A_s(i,j) = D_s + max(0.0,F_s);
+                    Ap_temp += D_s + max(0.0,-F_s);
+                }
+                else if(bctype(i+1,j) == -1) {  // 压力出口
+                    A_s(i,j) =0;
+                    Ap_temp += D_s + max(0.0,-F_s);  
+                    source_x_temp += u_star(i+1,j)*(D_s + max(0.0,F_s));  
+                    source_y_temp += v_star(i+1,j)*(D_s + max(0.0,F_s));  
+                }
+                 else if(bctype(i+1,j) > 0) {  // wall边界
+                    A_s(i,j) = 0;
+                    Ap_temp += 2*D_s + max(0.0,-F_s);
+                    source_x_temp += zoneu[zoneid(i+1,j)]*(2*D_s + max(0.0,F_s));
+                    source_y_temp += zonev[zoneid(i+1,j)]*(2*D_s + max(0.0,F_s));
+                } else if(bctype(i+1,j) > -10) {  // 其他边界
+                    A_s(i,j) = 0;
+                    Ap_temp += D_s + max(0.0,-F_s);  // 移除系数2
+                    source_x_temp += zoneu[zoneid(i+1,j)]*(D_s + max(0.0,F_s));  // 移除系数2
+                    source_y_temp += zonev[zoneid(i+1,j)]*(D_s + max(0.0,F_s));  // 移除系数2
+                }
+                
+                A_p(i,j) = Ap_temp+dx*dy/dt;
+                
+                source_x_temp += dx*dy*mesh.u0(i,j)/dt;
+                source_y_temp += dx*dy*mesh.v0(i,j)/dt;
+                // 设置源项
+                source_x[n] = source_x_temp;
+                source_y[n] = source_y_temp;
             }
-            
-            // ===== 计算西面系数 =====
-            if(bctype(i,j-1) == 0 || bctype(i,j-1) == -3) {
-                A_w(i,j) = D_w + max(0.0, F_w);
-                Ap_temp += D_w + max(0.0, -F_w);
-            } else if(bctype(i,j-1) == -1) {
-                A_w(i,j) = 0;
-                Ap_temp += D_w + max(0.0, -F_w);
-                source_x_temp +=  u_star(i,j) * (D_w + max(0.0, F_w));
-                source_y_temp +=  v_star(i,j) * (D_w + max(0.0, F_w));
-            } else if(bctype(i,j-1) > 0) {
-                A_w(i,j) = 0;
-                Ap_temp += 2*D_w + max(0.0, -F_w);
-                source_x_temp +=  zoneu[zoneid(i,j-1)] * (2*D_w + max(0.0, F_w));
-                source_y_temp +=  zonev[zoneid(i,j-1)] * (2*D_w + max(0.0, F_w));
-            } else if(bctype(i,j-1) > -10) {
-                A_w(i,j) = 0;
-                Ap_temp += D_w + max(0.0, -F_w);
-                source_x_temp +=  zoneu[zoneid(i,j-1)] * (D_w + max(0.0, F_w));
-                source_y_temp +=  zonev[zoneid(i,j-1)] * (D_w + max(0.0, F_w));
-            }
-            
-            // ===== 计算北面系数 =====
-            if(bctype(i-1,j) == 0) {
-                A_n(i,j) = D_n + max(0.0, -F_n);
-                Ap_temp += D_n + max(0.0, F_n);
-            } else if(bctype(i-1,j) == -1) {
-                A_n(i,j) = 0;
-                Ap_temp += D_n + max(0.0, F_n);
-                source_x_temp +=  u_star(i-1,j) * (D_n + max(0.0, -F_n));
-                source_y_temp +=  v_star(i-1,j) * (D_n + max(0.0, -F_n));
-            } else if(bctype(i-1,j) > 0) {
-                A_n(i,j) = 0;
-                Ap_temp += 2*D_n + max(0.0, F_n);
-                source_x_temp +=  zoneu[zoneid(i-1,j)] * (2*D_n + max(0.0, -F_n));
-                source_y_temp +=  zonev[zoneid(i-1,j)] * (2*D_n + max(0.0, -F_n));
-            } else if(bctype(i-1,j) > -10) {
-                A_n(i,j) = 0;
-                Ap_temp += D_n + max(0.0, F_n);
-                source_x_temp +=  zoneu[zoneid(i-1,j)] * (D_n + max(0.0, -F_n));
-                source_y_temp +=  zonev[zoneid(i-1,j)] * (D_n + max(0.0, -F_n));
-            }
-            
-            // ===== 计算南面系数 =====
-            if(bctype(i+1,j) == 0) {
-                A_s(i,j) = D_s + max(0.0, F_s);
-                Ap_temp += D_s + max(0.0, -F_s);
-            } else if(bctype(i+1,j) == -1) {
-                A_s(i,j) = 0;
-                Ap_temp += D_s + max(0.0, -F_s);
-                source_x_temp +=  u(i+1,j) * (D_s + max(0.0, F_s));
-                source_y_temp +=  v(i+1,j) * (D_s + max(0.0, F_s));
-            } else if(bctype(i+1,j) > 0) {
-                A_s(i,j) = 0;
-                Ap_temp += 2*D_s + max(0.0, -F_s);
-                source_x_temp +=  zoneu[zoneid(i+1,j)] * (2*D_s + max(0.0, F_s));
-                source_y_temp +=  zonev[zoneid(i+1,j)] * (2*D_s + max(0.0, F_s));
-            } else if(bctype(i+1,j) > -10) {
-                A_s(i,j) = 0;
-                Ap_temp += D_s + max(0.0, -F_s);
-                source_x_temp +=  zoneu[zoneid(i+1,j)] * (D_s + max(0.0, F_s));
-                source_y_temp +=  zonev[zoneid(i+1,j)] * (D_s + max(0.0, F_s));
-            }
-            
-            // 关键区别: 添加时间项到中心系数
-            A_p(i,j) = Ap_temp + dx*dy/dt;
-            
-            // 关键区别: 源项添加旧时间步项
-            source_x_temp +=  dx*dy * mesh.u0(i,j) / dt;
-            source_y_temp +=  dx*dy * mesh.v0(i,j) / dt;
-            
-            // 设置源项
-            source_x[n] = source_x_temp;
-            source_y[n] = source_y_temp;
         }
     }
 
-    // 应用松弛因子到邻接系数
-    A_e =  A_e;
-    A_w =  A_w;
-    A_n =  A_n;
-    A_s =  A_s;
+    A_e = A_e;
+    A_w = A_w;
+    A_n = A_n;
+    A_s = A_s;
     
-    // 复制系数到y方向动量方程
+    // 将系数复制到v方程
     equ_v.A_p = equ_u.A_p;
     equ_v.A_w = equ_u.A_w;
     equ_v.A_e = equ_u.A_e;
     equ_v.A_n = equ_u.A_n;
     equ_v.A_s = equ_u.A_s;
+    
 }
+
+
 
 // ============================================================================
 // 并行计算相关函数
@@ -1995,8 +1915,8 @@ void printSimulationSetup(const std::vector<Mesh>& sub_meshes, int n_splits, int
 
 bool checkConvergence(double norm_res_x, double norm_res_y, double norm_res_p) 
 {
-    const double tol_uv = 1e-15;  // 速度收敛容差
-    const double tol_p = 1e-11;   // 压力收敛容差
+    const double tol_uv = 1e-25;  // 速度收敛容差
+    const double tol_p = 1e-21;   // 压力收敛容差
     
     return (norm_res_x < tol_uv) && (norm_res_y < tol_uv) && (norm_res_p < tol_p);
 }
@@ -2151,3 +2071,4 @@ void printSimulationSetup_unsteady(const std::vector<Mesh>& sub_meshes, int n_sp
     std::cout << "  总模拟时间: " << dt * timesteps << std::endl;
     std::cout << "======================================================\n" << std::endl;
 }
+
