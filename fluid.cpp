@@ -14,6 +14,8 @@
 
 #include "fluid.h"
 #include <filesystem>
+#include <iomanip>
+#include <sstream>
 #include "parallel.h"
 
 namespace fs = std::filesystem;
@@ -714,8 +716,10 @@ void correct_pressure(Mesh &mesh, Equation &equ_u, double alpha_p) {
     // 边界点的压力修正量设为0
     for(int i = 0; i <= n_y + 1; i++) {
         for(int j = 0; j <= n_x + 1; j++) {
-            if(bctype(i,j) > 0) {
+            if(bctype(i,j) != 0) {
                 p_prime(i,j) = 0;
+                p(i,j) = 0;
+                p_star(i,j) = 0;
             }
         }
     }
@@ -1438,77 +1442,42 @@ void readParams(const std::string& folderPath, double& dx, double& dy) {
  * @param rank 进程编号
  * @param timestep_folder 时间步文件夹(可选)
  */
-void saveMeshData(const Mesh& mesh, int rank, const std::string& timestep_folder) {
-    std::string u_filename = "u_" + std::to_string(rank) + ".dat";
-    std::string v_filename = "v_" + std::to_string(rank) + ".dat";
-    std::string p_filename = "p_" + std::to_string(rank) + ".dat";
-
-    if(!timestep_folder.empty()) {
-        if (!fs::exists(timestep_folder)) {
-            fs::create_directory(timestep_folder);
-        }
-        u_filename = timestep_folder + "/" + u_filename;
-        v_filename = timestep_folder + "/" + v_filename;
-        p_filename = timestep_folder + "/" + p_filename;
-    }
-
+void saveMeshData(
+    const Mesh& mesh,
+    int rank,
+    const std::string& timestep_folder)
+{
     try {
-        std::ofstream u_file(u_filename);
-        if(!u_file) throw std::runtime_error("无法创建文件: " + u_filename);
-        u_file << mesh.u_star;
-        u_file.close();
+        fs::path dir;
 
-        std::ofstream v_file(v_filename);
-        if(!v_file) throw std::runtime_error("无法创建文件: " + v_filename);
-        v_file << mesh.v_star;
-        v_file.close();
-
-        std::ofstream p_file(p_filename);
-        if(!p_file) throw std::runtime_error("无法创建文件: " + p_filename);
-        p_file << mesh.p;
-        p_file.close();
-
-        // 同时保存到steady文件夹
-        std::string steady_folder = "steady";
-        if (!fs::exists(steady_folder)) {
-            fs::create_directory(steady_folder);
+        if (!timestep_folder.empty()) {
+            dir = fs::path(timestep_folder);
+            fs::create_directories(dir);   // MPI-safe 幂等
         }
 
-        std::string su_filename = steady_folder + "/u_" + std::to_string(rank) + ".dat";
-        std::string sv_filename = steady_folder + "/v_" + std::to_string(rank) + ".dat";
-        std::string sp_filename = steady_folder + "/p_" + std::to_string(rank) + ".dat";
-        std::string suf_filename = steady_folder + "/uf_" + std::to_string(rank) + ".dat";
-        std::string svf_filename = steady_folder + "/vf_" + std::to_string(rank) + ".dat";
+        auto write = [&](const std::string& name, const auto& field) {
+            fs::path p = dir.empty()
+                ? fs::path(name + "_" + std::to_string(rank) + ".dat")
+                : dir / (name + "_" + std::to_string(rank) + ".dat");
 
-        std::ofstream su_file(su_filename);
-        if(!su_file) throw std::runtime_error("无法创建文件: " + su_filename);
-        su_file << mesh.u_star;
-        su_file.close();
+            std::ofstream f(p);
+            if (!f) {
+                throw std::runtime_error("无法创建文件: " + p.string());
+            }
+            f << field;
+        };
 
-        std::ofstream sv_file(sv_filename);
-        if(!sv_file) throw std::runtime_error("无法创建文件: " + sv_filename);
-        sv_file << mesh.v_star;
-        sv_file.close();
+        write("u", mesh.u_star);
+        write("v", mesh.v_star);
+        write("p", mesh.p);
 
-        std::ofstream sp_file(sp_filename);
-        if(!sp_file) throw std::runtime_error("无法创建文件: " + sp_filename);
-        sp_file << mesh.p_star;
-        sp_file.close();
-
-        std::ofstream suf_file(suf_filename);
-        if(!suf_file) throw std::runtime_error("无法创建文件: " + suf_filename);
-        suf_file << mesh.u_face;
-        suf_file.close();
-
-        std::ofstream svf_file(svf_filename);
-        if(!svf_file) throw std::runtime_error("无法创建文件: " + svf_filename);
-        svf_file << mesh.v_face;
-        svf_file.close();
-
-    } catch(const std::exception& e) {
-        std::cerr << "保存数据时出错: " << e.what() << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[Rank " << rank << "] 保存 Mesh 数据失败: "
+                  << e.what() << std::endl;
+        throw;   // 关键 
     }
 }
+
 
 /**
  * @brief 保存预测数据(用于非稳态计算)
@@ -1517,41 +1486,32 @@ void saveMeshData(const Mesh& mesh, int rank, const std::string& timestep_folder
  * @param timesteps 时间步编号
  * @param timestep_folder 时间步文件夹
  */
-void saveforecastData(const Mesh& mesh, int rank, int timesteps, 
-                     const std::string& timestep_folder) {
-    std::string ufp_filename = "up_" + std::to_string(rank) + ".dat";
-    std::string vfp_filename = "vp_" + std::to_string(rank) + ".dat";
-    std::string pp_filename = "pp_" + std::to_string(rank) + ".dat";
-
-    if (!timestep_folder.empty()) {
-        std::string step_path = timestep_folder + "/" + std::to_string(timesteps);
-
-        if (!fs::exists(step_path)) {
-            fs::create_directories(step_path);
-        }
-
-        ufp_filename = step_path + "/" + ufp_filename;
-        vfp_filename = step_path + "/" + vfp_filename;
-        pp_filename = step_path + "/" + pp_filename;
-    }
-
+void saveforecastData(
+    const Mesh& mesh,
+    int rank,
+    int timestep,
+    double mu)
+{
     try {
-        std::ofstream ufp_file(ufp_filename);
-        if(!ufp_file) throw std::runtime_error("无法创建文件: " + ufp_filename);
-        ufp_file << mesh.u_face;
-        ufp_file.close();
+        std::ostringstream ss;
+        ss << "mu_" << std::fixed << std::setprecision(3) << mu;
 
-        std::ofstream vfp_file(vfp_filename);
-        if(!vfp_file) throw std::runtime_error("无法创建文件: " + vfp_filename);
-        vfp_file << mesh.v_face;
-        vfp_file.close();
+        fs::path step_dir = fs::path(ss.str()) / std::to_string(timestep);
+        fs::create_directories(step_dir); // MPI-safe 幂等
 
-        std::ofstream pp_file(pp_filename);
-        if(!pp_file) throw std::runtime_error("无法创建文件: " + pp_filename);
-        pp_file << mesh.p_prime;
-        pp_file.close();
+        auto dump = [&](const std::string& name, const auto& field) {
+            fs::path p = step_dir / (name + "_" + std::to_string(rank) + ".dat");
+            std::ofstream f(p);
+            if (!f) throw std::runtime_error(p.string());
+            f << field;
+        };
 
-    } catch(const std::exception& e) {
-        std::cerr << "保存数据时出错: " << e.what() << std::endl;
+        dump("up", mesh.u_face);
+        dump("vp", mesh.v_face);
+        dump("pp", mesh.p_prime);
+
+    } catch (const std::exception& e) {
+        std::cerr << "[Rank " << rank << "] IO失败: " << e.what() << std::endl;
+        throw;
     }
 }

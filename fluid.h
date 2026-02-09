@@ -651,7 +651,7 @@ void saveMeshData(const Mesh& mesh, int rank, const std::string& timestep_folder
  * @note 会自动创建时间步子目录
  */
 void saveforecastData(const Mesh& mesh, int rank, int timesteps,
-                     const std::string& timestep_folder);
+                     double mu);
 
 /** @} */ // end of IOFunctions
 
