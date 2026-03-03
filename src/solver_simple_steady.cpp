@@ -31,12 +31,6 @@ int main(int argc, char* argv[])
     
     // 广播参数到所有进程
     broadcastParameters(mesh_folder, dt, timesteps, mu, n_splits, rank);
-    
-    // 读取并同步网格参数
-    readParams(mesh_folder, dx, dy);
-    MPI_Bcast(&dx, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Bcast(&dy, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    
     // 验证参数一致性
     verifyParameterConsistency(mesh_folder, dt, timesteps, mu, n_splits, rank, num_procs);
     

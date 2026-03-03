@@ -5,7 +5,6 @@
 namespace fs = std::filesystem;
 // 全局变量定义
 
-double dx, dy;
 
  
 void printMatrix(const MatrixXd& matrix, const string& name, int precision ) {
@@ -37,6 +36,11 @@ Mesh::Mesh(int n_y, int n_x)
       x_c(n_y, n_x),
       y_c(n_y, n_x),
 
+      area_e(n_y, n_x),
+      area_w(n_y, n_x),
+      area_s(n_y, n_x),
+      area_n(n_y, n_x),
+      vol(n_y, n_x),
       p(n_y, n_x),
       p_star(n_y, n_x),
       p_prime(n_y, n_x),
@@ -64,6 +68,15 @@ void Mesh::initializeToZero() {
     v_face.setZero();
     u0.setZero();   
     v0.setZero();
+    x.setZero();   
+    y.setZero(); 
+    x_c.setZero();   
+    y_c.setZero();
+    area_e.setZero();
+    area_w.setZero();
+    area_s.setZero();
+    area_n.setZero();
+    vol.setZero();     
     bctype.setZero();
     zoneid.setZero();
     interid.setZero();
@@ -194,34 +207,6 @@ for(int i = 0; i < ny-1; i++) {
 }
 
 
-void Mesh::saveToFolder(const std::string& folderPath) const {
-    // 创建文件夹
-    if (!fs::exists(folderPath)) {
-        fs::create_directory(folderPath);
-    }
-
-    // 保存网格参数
-    std::ofstream paramFile(folderPath + "/params.txt");
-    paramFile << nx << " " << ny << "\n";
-    paramFile << dx << " " << dy << "\n";
-    paramFile.close();
-
-    // 保存矩阵数据
-    std::ofstream bcFile(folderPath + "/bctype.dat");
-    bcFile << bctype;
-    bcFile.close();
-
-    std::ofstream zoneFile(folderPath + "/zoneid.dat");
-    zoneFile << zoneid;
-    zoneFile.close();
-
-    // 保存区域速度
-    std::ofstream zoneuvFile(folderPath + "/zoneuv.txt");
-    for(size_t i = 0; i < zoneu.size(); i++) {
-        zoneuvFile << zoneu[i] << " " << zonev[i] << "\n";
-    }
-    zoneuvFile.close();
-}
 
 // 从文件夹构造网格
 Mesh::Mesh(const std::string& folderPath) {
@@ -236,7 +221,7 @@ Mesh::Mesh(const std::string& folderPath) {
     }
     
     // 读取基本参数
-    paramFile >> nx >> ny >> ::dx >> ::dy;
+    paramFile >> nx >> ny ;
     paramFile.close();
 
     // 初始化所有矩阵
@@ -251,6 +236,17 @@ Mesh::Mesh(const std::string& folderPath) {
     p_prime.resize(ny , nx );
     u_face.resize(ny , nx-1);
     v_face.resize(ny-1 , nx );
+    x.setZero(ny+1 , nx+1);   
+    y.setZero(ny+1 , nx+1); 
+    x_c.setZero(ny , nx);   
+    y_c.setZero(ny , nx);
+
+    area_e.setZero(ny , nx);   
+    area_w.setZero(ny , nx);
+    area_s.setZero(ny , nx);
+    area_n.setZero(ny , nx);
+    vol.setZero(ny , nx);    
+                  
     bctype.resize(ny , nx );
     zoneid.resize(ny , nx );
     interid.resize(ny , nx );
@@ -282,6 +278,32 @@ Mesh::Mesh(const std::string& folderPath) {
     }
     zoneFile.close();
 
+
+    // 读取 x 坐标
+    std::ifstream xFile(folderPath + "/x.dat");
+    if (!xFile) {
+       throw std::runtime_error("无法打开 x 坐标文件!");
+    }
+    for(int i = 0; i < x.rows(); i++) {
+       for(int j = 0; j < x.cols(); j++) {
+        xFile >> x(i,j);
+    }
+    }
+    xFile.close();
+
+    // 读取 y 坐标
+    std::ifstream yFile(folderPath + "/y.dat");
+    if (!yFile) {
+    throw std::runtime_error("无法打开 y 坐标文件!");
+    }
+    for(int i = 0; i < y.rows(); i++) {
+    for(int j = 0; j < y.cols(); j++) {
+        yFile >> y(i,j);
+    }
+    }
+    yFile.close();
+
+
     // 读取区域速度
     std::ifstream zoneuvFile(folderPath + "/zoneuv.txt");
     if (!zoneuvFile) {
@@ -299,7 +321,88 @@ Mesh::Mesh(const std::string& folderPath) {
     
     // 初始化边界条件
     initializeBoundaryConditions();
+    //计算几何派生量
+    initGeometry();
 }
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// initGeometry()
+// 索引约定：i = 行索引（y 方向，0..ny），j = 列索引（x 方向，0..nx）
+// ══════════════════════════════════════════════════════════════════════════════
+void Mesh::initGeometry() {
+
+    // ── 单元中心坐标  ny×nx ───────────────────────────────────────────
+    x_c.resize(ny, nx);
+    y_c.resize(ny, nx);
+    for (int i = 0; i < ny; ++i)
+        for (int j = 0; j < nx; ++j) {
+            x_c(i, j) = 0.25 * (x(i,   j) + x(i,   j+1) +
+                                  x(i+1, j) + x(i+1, j+1));
+            y_c(i, j) = 0.25 * (y(i,   j) + y(i,   j+1) +
+                                  y(i+1, j) + y(i+1, j+1));
+        }
+    // ── 面积（边长）与体积  ny×nx ─────────────────────────────────────
+    //
+    //  节点布局（cell i,j 的四个角点）：
+    //
+    //   (i,  j  ) ── N面 ── (i,  j+1)
+    //       |                    |
+    //      W面    cell(i,j)     E面
+    //       |                    |
+    //   (i+1,j  ) ── S面 ── (i+1,j+1)
+    //
+    //  North 面：节点 (i,  j  ) → (i,  j+1)
+    //  South 面：节点 (i+1,j  ) → (i+1,j+1)
+    //  West  面：节点 (i,  j  ) → (i+1,j  )
+    //  East  面：节点 (i,  j+1) → (i+1,j+1)
+    //
+    //  体积（2-D 面积）：对角线叉积公式
+    //    d1 = (i+1,j+1) - (i,  j  )   （NW→SE 对角线）
+    //    d2 = (i+1,j  ) - (i,  j+1)   （NE→SW 对角线）
+    //    vol = 0.5 * |d1 × d2|
+    // ─────────────────────────────────────────────────────────────────
+
+    area_e.resize(ny, nx);
+    area_w.resize(ny, nx);
+    area_s.resize(ny, nx);
+    area_n.resize(ny, nx);
+    vol   .resize(ny, nx);
+
+    for (int i = 0; i < ny; ++i) {
+        for (int j = 0; j < nx; ++j) {
+
+            // —— North 面长度 ——
+            double dx_n = x(i,   j+1) - x(i,   j  );
+            double dy_n = y(i,   j+1) - y(i,   j  );
+            area_n(i, j) = std::sqrt(dx_n*dx_n + dy_n*dy_n);
+
+            // —— South 面长度 ——
+            double dx_s = x(i+1, j+1) - x(i+1, j  );
+            double dy_s = y(i+1, j+1) - y(i+1, j  );
+            area_s(i, j) = std::sqrt(dx_s*dx_s + dy_s*dy_s);
+
+            // —— West 面长度 ——
+            double dx_w = x(i+1, j  ) - x(i,   j  );
+            double dy_w = y(i+1, j  ) - y(i,   j  );
+            area_w(i, j) = std::sqrt(dx_w*dx_w + dy_w*dy_w);
+
+            // —— East 面长度 ——
+            double dx_e = x(i+1, j+1) - x(i,   j+1);
+            double dy_e = y(i+1, j+1) - y(i,   j+1);
+            area_e(i, j) = std::sqrt(dx_e*dx_e + dy_e*dy_e);
+
+            // —— 单元体积（2-D面积，对角线叉积） ——
+            double d1x = x(i+1, j+1) - x(i,   j  );   // NW→SE
+            double d1y = y(i+1, j+1) - y(i,   j  );
+            double d2x = x(i+1, j  ) - x(i,   j+1);   // NE→SW
+            double d2y = y(i+1, j  ) - y(i,   j+1);
+            vol(i, j)  = 0.5 * std::abs(d1x*d2y - d1y*d2x);
+        }
+    }
+
+}
+
 // Equation 类的构造函数
 Equation::Equation(Mesh& mesh_)
     : A_p(mesh_.ny , mesh_.nx ),
@@ -412,6 +515,15 @@ void face_velocity(Mesh& mesh, Equation& equ_u) {
     MatrixXd& v = mesh.v;
     MatrixXd& p = mesh.p;
     MatrixXd& A_p = equ_u.A_p;
+    double dist_e,dist_ee,dist_w,dist_ss,dist_s,dist_n;
+    MatrixXd &x_c  = mesh.x_c;
+    MatrixXd &y_c  = mesh.y_c;
+    MatrixXd &area_e = mesh.area_e;
+    MatrixXd &area_w = mesh.area_w;
+    MatrixXd &area_s = mesh.area_s;
+    MatrixXd &area_n = mesh.area_n;
+    MatrixXd &vol    = mesh.vol;
+
 
     for(int i = 0; i < mesh.ny ; i++) {
         for(int j = 0; j < mesh.nx-1; j++) {
@@ -419,15 +531,19 @@ void face_velocity(Mesh& mesh, Equation& equ_u) {
                 (bctype(i,j) == 0 && bctype(i,j+1) == -3) ||
                 (bctype(i,j) == -3 && bctype(i,j+1) == 0)) {
 
+                dist_e = x_c(i, j+1) - x_c(i, j);   // 到东侧cell中心距离
+                dist_w = x_c(i, j)   - x_c(i, j-1); // 到西侧cell中心距离
+                dist_ee = x_c(i, j+2) - x_c(i, j+1);   // 到东东侧cell中心距离
+
                 if (bctype(i,j+2) == -2) p(i,j+2) = p(i,j+1);
                 else if (bctype(i,j-1) == -2) p(i,j-1) = p(i,j);
                 else if (bctype(i,j+2) == -1) p(i,j+2) = 0;
                 else if (bctype(i,j-1) == -1) p(i,j-1) = 0;
 
                 u_face(i,j) = 0.5*(u(i,j) + u(i,j+1))
-                            + 0.25*(p(i,j+1) - p(i,j-1)) * dy / A_p(i,j)
-                            + 0.25*(p(i,j+2) - p(i,j)) * dy / A_p(i,j+1)
-                            - 0.5*(1.0/A_p(i,j) + 1.0/A_p(i,j+1)) * (p(i,j+1) - p(i,j)) * dy;
+                            + 0.5*(p(i,j+1) - p(i,j-1)) * vol(i,j) / (A_p(i,j)*(dist_e+dist_w))
+                            + 0.5*(p(i,j+2) - p(i,j)) * vol(i,j) / (A_p(i,j+1)*(dist_ee+dist_e))
+                            - 0.5*(1.0/A_p(i,j) + 1.0/A_p(i,j+1)) * (p(i,j+1) - p(i,j))  * vol(i,j)/dist_e;
             }
             else if (bctype(i,j) == 0 && bctype(i,j+1) == -1) {
                 u_face(i,j) = u(i,j);
@@ -453,15 +569,19 @@ void face_velocity(Mesh& mesh, Equation& equ_u) {
     for(int i = 0; i < mesh.ny-1; i++) {
         for(int j = 0; j < mesh.nx ; j++) {
             if (bctype(i,j) == 0 && bctype(i+1,j) == 0) {
+                
+                dist_ss = y_c(i+2, j) - y_c(i+1, j);   // 到南侧cell中心距离
+                dist_s  = y_c(i+1, j) - y_c(i, j);   // 到南侧cell中心距离
+                dist_n  = y_c(i, j)   - y_c(i-1, j); // 到北侧cell中心距离
                 if (bctype(i+2,j) == -2) p(i+2,j) = p(i+1,j);
                 else if (bctype(i-1,j) == -2) p(i-1,j) = p(i,j);
                 else if (bctype(i+2,j) == -1) p(i+2,j) = 0;
                 else if (bctype(i-1,j) == -1) p(i-1,j) = 0;
-
+ 
                 v_face(i,j) = 0.5*(v(i+1,j) + v(i,j))
-                            + 0.25*(p(i,j) - p(i+2,j)) * dx / A_p(i+1,j)
-                            + 0.25*(p(i-1,j) - p(i+1,j)) * dx / A_p(i,j)
-                            - 0.5*(1.0/A_p(i+1,j) + 1.0/A_p(i,j)) * (p(i,j) - p(i+1,j)) * dx;
+                            + 0.5*(p(i,j) - p(i+2,j)) * vol(i,j) / (A_p(i+1,j)*(dist_ss+dist_s))
+                            + 0.5*(p(i-1,j) - p(i+1,j)) * vol(i,j) / (A_p(i,j)*(dist_n+dist_s))
+                            - 0.5*(1.0/A_p(i+1,j) + 1.0/A_p(i,j)) * (p(i,j) - p(i+1,j)) * vol(i,j)/dist_s;
             }
             else if (bctype(i,j) == 0 && bctype(i+1,j) == -2) {
                 v_face(i,j) = mesh.zonev[mesh.zoneid(i+1,j)];
@@ -503,6 +623,16 @@ void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u)
     MatrixXd &Ap_n = equ_p.A_n;
     MatrixXd &Ap_s = equ_p.A_s;
     VectorXd &source_p = equ_p.source;
+
+    double dist_e,dist_w,dist_s,dist_n;
+    MatrixXd &x_c  = mesh.x_c;
+    MatrixXd &y_c  = mesh.y_c;
+    MatrixXd &area_e = mesh.area_e;
+    MatrixXd &area_w = mesh.area_w;
+    MatrixXd &area_s = mesh.area_s;
+    MatrixXd &area_n = mesh.area_n;
+    MatrixXd &vol    = mesh.vol;
+
     equ_p.initializeToZero();
     mesh.p_prime.setZero();
     // 遍历网格点
@@ -512,13 +642,17 @@ void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u)
                 int n = mesh.interid(i,j) ;
                 double Ap_temp = 0;
                 // 检查东面
+                dist_e = x_c(i, j+1) - x_c(i, j);   // 到东侧cell中心距离
+                dist_w = x_c(i, j)   - x_c(i, j-1); // 到西侧cell中心距离
+                dist_s = y_c(i+1, j) - y_c(i, j);   // 到南侧cell中心距离
+                dist_n = y_c(i, j)   - y_c(i-1, j); // 到北侧cell中心距离
                 if(bctype(i,j+1) == 0) {
-                    Ap_e(i,j) = 0.5*(1/A_p(i,j) +1/A_p(i,j+1))*(dy*dy);
+                    Ap_e(i,j) = 0.5*(1/A_p(i,j) +1/A_p(i,j+1))*vol(i,j)*area_e(i,j)/dist_e;
                     Ap_temp += Ap_e(i,j);
                 }  
                 else if (bctype(i,j+1) == -3)
                 {
-                    Ap_e(i,j) = 0.5*(1/A_p(i,j) +1/A_p(i,j+1))*(dy*dy);
+                    Ap_e(i,j) = 0.5*(1/A_p(i,j) +1/A_p(i,j+1))*vol(i,j)*area_e(i,j)/dist_e;
                     Ap_temp += Ap_e(i,j);
                 }
                 
@@ -529,12 +663,12 @@ void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u)
 
                 // 检查西面
                 if(bctype(i,j-1) == 0) {
-                    Ap_w(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i,j-1))*(dy*dy);
+                    Ap_w(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i,j-1))*vol(i,j)*area_w(i,j)/dist_w;
                     Ap_temp += Ap_w(i,j);
                 }
                 else if (bctype(i,j-1) == -3)
                 {
-                    Ap_w(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i,j-1))*(dy*dy);
+                    Ap_w(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i,j-1))*vol(i,j)*area_w(i,j)/dist_w;
                     Ap_temp += Ap_w(i,j);
                 }
                 
@@ -544,7 +678,7 @@ void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u)
 
                 // 检查北面
                 if(bctype(i-1,j) == 0) {
-                    Ap_n(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i-1,j))*(dx*dx);
+                    Ap_n(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i-1,j))*vol(i,j)*area_n(i,j)/dist_n;
                     Ap_temp += Ap_n(i,j);
                 }
                
@@ -554,7 +688,7 @@ void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u)
 
                 // 检查南面
                 if(bctype(i+1,j) == 0) {
-                    Ap_s(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i+1,j))*(dx*dx);
+                    Ap_s(i,j) = 0.5*(1/A_p(i,j) + 1/A_p(i+1,j))*vol(i,j)*area_s(i,j)/dist_s;
                     Ap_temp += Ap_s(i,j);
                 } 
                 
@@ -566,8 +700,8 @@ void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u)
                 Ap_p(i,j) = Ap_temp;
                 source_p[n]=0;
                 
-                source_p[n] +=   -(u_face(i,j) - u_face(i,j-1))*dy 
-                - (v_face(i-1,j) - v_face(i,j))*dx;         
+                source_p[n] +=   -(u_face(i,j)*area_e(i,j) - u_face(i,j-1)*area_w(i,j)) 
+                - (v_face(i-1,j)*area_n(i,j) - v_face(i,j)*area_s(i,j));         
             }
         }
     }
@@ -614,13 +748,24 @@ void correct_velocity(Mesh &mesh, Equation &equ_u)
     MatrixXd &A_p = equ_u.A_p;
     int n_x = mesh.nx;
     int n_y = mesh.ny;
-
+    double dist_e,dist_w,dist_s,dist_n;
+    MatrixXd &x_c  = mesh.x_c;
+    MatrixXd &y_c  = mesh.y_c;
+    MatrixXd &area_e = mesh.area_e;
+    MatrixXd &area_w = mesh.area_w;
+    MatrixXd &area_s = mesh.area_s;
+    MatrixXd &area_n = mesh.area_n;
+    MatrixXd &vol    = mesh.vol;
     
 
     // 修正 u_star
     for (int i = 0; i < n_y; i++) {
         for (int j = 0; j < n_x; j++) {
             if (bctype(i,j) == 0) {
+                dist_e = x_c(i, j+1) - x_c(i, j);   // 到东侧cell中心距离
+                dist_w = x_c(i, j)   - x_c(i, j-1); // 到西侧cell中心距离
+                dist_s = y_c(i+1, j) - y_c(i, j);   // 到南侧cell中心距离
+                dist_n = y_c(i, j)   - y_c(i-1, j); // 到北侧cell中心距离
                 double p_west, p_east;
 
                 // 西面
@@ -635,7 +780,7 @@ void correct_velocity(Mesh &mesh, Equation &equ_u)
                 else
                     p_east = p_prime(i,j);
 
-                u_star(i,j) = u(i,j) + 0.5 * (p_west - p_east) * dy / A_p(i,j);
+                u_star(i,j) = u(i,j) +  (p_west - p_east) * vol(i,j) / (A_p(i,j)*(dist_w+dist_e));
             }
         }
     }
@@ -644,6 +789,11 @@ void correct_velocity(Mesh &mesh, Equation &equ_u)
     for (int i = 0; i < n_y; i++) {
         for (int j = 0; j < n_x; j++) {
             if (bctype(i,j) == 0) {
+
+                dist_e = x_c(i, j+1) - x_c(i, j);   // 到东侧cell中心距离
+                dist_w = x_c(i, j)   - x_c(i, j-1); // 到西侧cell中心距离
+                dist_s = y_c(i+1, j) - y_c(i, j);   // 到南侧cell中心距离
+                dist_n = y_c(i, j)   - y_c(i-1, j); // 到北侧cell中心距离
                 double p_north, p_south;
 
                 // 北面
@@ -658,7 +808,7 @@ void correct_velocity(Mesh &mesh, Equation &equ_u)
                 else
                     p_south = p_prime(i,j);
 
-                v_star(i,j) = v(i,j) + 0.5 * (p_south - p_north) * dx / A_p(i,j);
+                v_star(i,j) = v(i,j) +  (p_south - p_north) * vol(i,j) / (A_p(i,j)*(dist_s+dist_n));
             }
         }
     }
@@ -669,10 +819,12 @@ void correct_velocity(Mesh &mesh, Equation &equ_u)
             if ((bctype(i,j) == 0 && bctype(i,j+1) == 0) ||
                 (bctype(i,j) == 0 && bctype(i,j+1) == -3) ||
                 (bctype(i,j) == -3 && bctype(i,j+1) == 0)) {
+                dist_e = x_c(i, j+1) - x_c(i, j);   // 到东侧cell中心距离
+                dist_w = x_c(i, j)   - x_c(i, j-1); // 到西侧cell中心距离
                 // 情况1：内部或特殊内部 → 做压力修正
                 u_face(i,j) = u_face(i,j) + 
-                              0.5 * (1/A_p(i,j) + 1/A_p(i,j+1)) * 
-                              (p_prime(i,j) - p_prime(i,j+1)) * dy;
+                              (1/A_p(i,j) + 1/A_p(i,j+1)) * 
+                              (p_prime(i,j) - p_prime(i,j+1)) *vol(i,j) /(dist_e+dist_w);
             }
             else if (bctype(i,j) == 0 && bctype(i,j+1) == -1) {
                 // 情况2：内部-压力边界 → 用 u_star(i,j)
@@ -694,10 +846,12 @@ void correct_velocity(Mesh &mesh, Equation &equ_u)
             if ((bctype(i,j) == 0 && bctype(i+1,j) == 0) ||
                 (bctype(i,j) == 0 && bctype(i+1,j) == -3) ||
                 (bctype(i,j) == -3 && bctype(i+1,j) == 0)) {
+                dist_s = y_c(i+1, j) - y_c(i, j);   // 到南侧cell中心距离
+                dist_n = y_c(i, j)   - y_c(i-1, j); // 到北侧cell中心距离
                 // 情况1：内部或特殊内部 → 做压力修正
                 v_face(i,j) = v_face(i,j) + 
-                              0.5 * (1/A_p(i,j) + 1/A_p(i+1,j)) * 
-                              (p_prime(i+1,j) - p_prime(i,j)) * dx;
+                               (1/A_p(i,j) + 1/A_p(i+1,j)) * 
+                              (p_prime(i+1,j) - p_prime(i,j)) *vol(i,j) /(dist_s+dist_n);
             }
             else if (bctype(i,j) == 0 && bctype(i+1,j) == -1) {
                 // 情况2：内部-压力边界 → 用 v_star(i,j)
@@ -787,17 +941,22 @@ void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,do
     int n_x=equ_u.n_x;
     int n_y=equ_u.n_y;
     double D_e,D_w,D_n,D_s,F_e,F_n,F_s,F_w;
+    double dist_e,dist_w,dist_s,dist_n;
 
-    
-    D_e=dy*mu/(dx);
-    D_w=dy*mu/(dx);
-    D_n=dx*mu/(dy);
-    D_s=dx*mu/(dy);
     // 引用网格变量
     MatrixXi &zoneid = mesh.zoneid;
     MatrixXi &bctype = mesh.bctype;
     MatrixXd &u_face= mesh.u_face;
     MatrixXd &v_face= mesh.v_face;
+
+    MatrixXd &x_c  = mesh.x_c;
+    MatrixXd &y_c  = mesh.y_c;
+    MatrixXd &area_e = mesh.area_e;
+    MatrixXd &area_w = mesh.area_w;
+    MatrixXd &area_s = mesh.area_s;
+    MatrixXd &area_n = mesh.area_n;
+    MatrixXd &vol    = mesh.vol;
+
     MatrixXd &p= mesh.p;
     MatrixXd &u_star= mesh.u_star;
     MatrixXd &v_star= mesh.v_star;
@@ -818,13 +977,23 @@ void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,do
     for(i=0; i<n_y; i++) {
         for(j=0; j<n_x; j++) {
             if(bctype(i,j) == 0) {  // 内部面
+
+                dist_e = x_c(i, j+1) - x_c(i, j);   // 到东侧cell中心距离
+                dist_w = x_c(i, j)   - x_c(i, j-1); // 到西侧cell中心距离
+                dist_s = y_c(i+1, j) - y_c(i, j);   // 到南侧cell中心距离
+                dist_n = y_c(i, j)   - y_c(i-1, j); // 到北侧cell中心距离
+
+                D_e=area_e(i,j)*mu/(dist_e);
+                D_w=area_w(i,j)*mu/(dist_w);
+                D_s=area_s(i,j)*mu/(dist_s);
+                D_n=area_n(i,j)*mu/(dist_n);
                 n = mesh.interid(i,j) ;
                 
                 // 计算面上流量
-                F_e = dy*u_face(i,j);
-                F_w = dy*u_face(i,j-1);
-                F_n = dx*v_face(i-1,j);
-                F_s = dx*v_face(i,j);
+                F_e = area_e(i,j)*u_face(i,j);
+                F_w = area_w(i,j)*u_face(i,j-1);
+                F_n = area_n(i,j)*v_face(i-1,j);
+                F_s = area_s(i,j)*v_face(i,j);
                 
                 double Ap_temp = 0;
                // 初始化源项
@@ -834,26 +1003,26 @@ void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,do
             if((bctype(i,j-1) == 0 ||  bctype(i,j-1) == -3) && 
                (bctype(i,j+1) == 0 ||  bctype(i,j+1) == -3)) {
                 // 两侧都是内部点或滑移边界，使用中心差分
-                source_x_temp = 0.5*alpha_uv*(p(i,j-1)-p(i,j+1))*dy;
+                source_x_temp = alpha_uv*(p(i,j-1)-p(i,j+1))*vol(i,j)/(dist_e+dist_w);
                 
             } else if(bctype(i,j-1) == -1) {
                 // 左边是压力为0的边界
-                source_x_temp = 0.5*alpha_uv*(-p(i,j+1))*dy;
+                source_x_temp = alpha_uv*(-p(i,j+1))*vol(i,j)/(dist_e+dist_w);
             } else if(bctype(i,j+1) == -1) {
                 // 右边是压力为0的边界
-                source_x_temp = 0.5*alpha_uv*(p(i,j-1))*dy;
+                source_x_temp = alpha_uv*(p(i,j-1))*vol(i,j)/(dist_e+dist_w);
             } else if(bctype(i,j-1) == -2) {
                 // 左边是速度入口
-                source_x_temp = 0.5*alpha_uv*(p(i,j)-p(i,j+1))*dy;
+                source_x_temp = alpha_uv*(p(i,j)-p(i,j+1))*vol(i,j)/(dist_e+dist_w);
             } else if(bctype(i,j+1) == -2) {
                 // 右边是速度入口
-                source_x_temp = 0.5*alpha_uv*(p(i,j-1)-p(i,j))*dy;
+                source_x_temp = alpha_uv*(p(i,j-1)-p(i,j))*vol(i,j)/(dist_e+dist_w);
             } else if(bctype(i,j-1) != 0 && bctype(i,j+1) == 0) {
                 // 左边是其他边界，右边是内部点
-                source_x_temp = 0.5*alpha_uv*(p(i,j)-p(i,j+1))*dy;
+                source_x_temp = alpha_uv*(p(i,j)-p(i,j+1))*vol(i,j)/(dist_e+dist_w);
             } else if(bctype(i,j-1) == 0 && bctype(i,j+1) != 0) {
                 // 左边是内部点，右边是其他边界
-                source_x_temp = 0.5*alpha_uv*(p(i,j-1)-p(i,j))*dy;
+                source_x_temp = alpha_uv*(p(i,j-1)-p(i,j))*vol(i,j)/(dist_e+dist_w);
             } else {
                 // 两边都是固定边界或其他情况
                 source_x_temp = 0.0; 
@@ -863,28 +1032,28 @@ void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,do
             if((bctype(i-1,j) == 0 ||  bctype(i-1,j) == -3) && 
                (bctype(i+1,j) == 0 ||  bctype(i+1,j) == -3)) {
                 // 上下都是内部点或滑移边界，使用中心差分
-                source_y_temp = 0.5*alpha_uv*(p(i+1,j)-p(i-1,j))*dx;
+                source_y_temp = alpha_uv*(p(i+1,j)-p(i-1,j))*vol(i,j)/(dist_n+dist_s);
                 
             } else if(bctype(i-1,j) == -1) {
                 // 上边是压力为0的边界
-                source_y_temp = 0.5*alpha_uv*(p(i+1,j))*dx;
+                source_y_temp = alpha_uv*(p(i+1,j))*vol(i,j)/(dist_n+dist_s);
                 
             } else if(bctype(i+1,j) == -1) {
                 // 下边是压力为0的边界  压力出口
-                source_y_temp = 0.5*alpha_uv*(-p(i-1,j))*dx;
+                source_y_temp = alpha_uv*(-p(i-1,j))*vol(i,j)/(dist_n+dist_s);
             } else if(bctype(i-1,j) == -2) {
                 // 上边是压力为0的边界
-                source_y_temp = 0.5*alpha_uv*(p(i+1,j)-p(i,j))*dx;
+                source_y_temp = alpha_uv*(p(i+1,j)-p(i,j))*vol(i,j)/(dist_n+dist_s);
                 
             } else if(bctype(i+1,j) == -2) {
                 // 下边是压力为0的边界
-                source_y_temp = 0.5*alpha_uv*(p(i,j)-p(i-1,j))*dx;
+                source_y_temp = alpha_uv*(p(i,j)-p(i-1,j))*vol(i,j)/(dist_n+dist_s);
             } else if(bctype(i-1,j) != 0 && bctype(i+1,j) == 0) {
                 // 上边是其他边界，下边是内部点
-                source_y_temp = 0.5*alpha_uv*(p(i+1,j)-p(i,j))*dx;
+                source_y_temp = alpha_uv*(p(i+1,j)-p(i,j))*vol(i,j)/(dist_n+dist_s);
             } else if(bctype(i-1,j) == 0 && bctype(i+1,j) != 0) {
                 // 上边是内部点，下边是其他边界
-                source_y_temp = 0.5*alpha_uv*(p(i,j)-p(i-1,j))*dx;
+                source_y_temp = alpha_uv*(p(i,j)-p(i-1,j))*vol(i,j)/(dist_n+dist_s);
             } else {
                 // 上下都是固定边界或其他情况
                 source_y_temp = 0.0;
@@ -1022,7 +1191,7 @@ void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,do
 
 void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,double dt)
 {   
- //-1 压力出口(给定压强)
+    //-1 压力出口(给定压强)
     //-2 固定速度
     //-3 并行交界面
 
@@ -1030,18 +1199,22 @@ void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,dou
     int n_x=equ_u.n_x;
     int n_y=equ_u.n_y;
     double D_e,D_w,D_n,D_s,F_e,F_n,F_s,F_w;
+    double dist_e,dist_w,dist_s,dist_n;
 
-    
-    D_e=dy*mu/(dx);
-    D_w=dy*mu/(dx);
-    D_n=dx*mu/(dy);
-    D_s=dx*mu/(dy);
-    
     // 引用网格变量
     MatrixXi &zoneid = mesh.zoneid;
     MatrixXi &bctype = mesh.bctype;
     MatrixXd &u_face= mesh.u_face;
     MatrixXd &v_face= mesh.v_face;
+
+    MatrixXd &x_c  = mesh.x_c;
+    MatrixXd &y_c  = mesh.y_c;
+    MatrixXd &area_e = mesh.area_e;
+    MatrixXd &area_w = mesh.area_w;
+    MatrixXd &area_s = mesh.area_s;
+    MatrixXd &area_n = mesh.area_n;
+    MatrixXd &vol    = mesh.vol;
+
     MatrixXd &p= mesh.p;
     MatrixXd &u_star= mesh.u_star;
     MatrixXd &v_star= mesh.v_star;
@@ -1057,19 +1230,28 @@ void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,dou
     mesh.u.setZero();
     mesh.v.setZero();
     equ_u.initializeToZero();
-    equ_v.initializeToZero();   
+    equ_v.initializeToZero();
     // 遍历网格
     for(i=0; i<n_y; i++) {
         for(j=0; j<n_x; j++) {
             if(bctype(i,j) == 0) {  // 内部面
+                
+                dist_e = x_c(i, j+1) - x_c(i, j);   // 到东侧cell中心距离
+                dist_w = x_c(i, j)   - x_c(i, j-1); // 到西侧cell中心距离
+                dist_s = y_c(i+1, j) - y_c(i, j);   // 到南侧cell中心距离
+                dist_n = y_c(i, j)   - y_c(i-1, j); // 到北侧cell中心距离
+
+                D_e=area_e(i,j)*mu/(dist_e);
+                D_w=area_w(i,j)*mu/(dist_w);
+                D_s=area_s(i,j)*mu/(dist_s);
+                D_n=area_n(i,j)*mu/(dist_n);
                 n = mesh.interid(i,j) ;
                 
                 // 计算面上流量
-                F_e = dy*u_face(i,j);
-                F_w = dy*u_face(i,j-1);
-                F_n = dx*v_face(i-1,j);
-                F_s = dx*v_face(i,j);
-                
+                F_e = area_e(i,j)*u_face(i,j);
+                F_w = area_w(i,j)*u_face(i,j-1);
+                F_n = area_n(i,j)*v_face(i-1,j);
+                F_s = area_s(i,j)*v_face(i,j);
                 double Ap_temp = 0;
                // 初始化源项
                double source_x_temp, source_y_temp;
@@ -1078,26 +1260,26 @@ void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,dou
             if((bctype(i,j-1) == 0 ||  bctype(i,j-1) == -3) && 
                (bctype(i,j+1) == 0 ||  bctype(i,j+1) == -3)) {
                 // 两侧都是内部点或滑移边界，使用中心差分
-                source_x_temp = 0.5*(p(i,j-1)-p(i,j+1))*dy;
+                source_x_temp = (p(i,j-1)-p(i,j+1))*vol(i,j)/(dist_e+dist_w);
                 
             } else if(bctype(i,j-1) == -1) {
                 // 左边是压力为0的边界
-                source_x_temp = 0.5*(-p(i,j+1))*dy;
+                source_x_temp = (-p(i,j+1))*vol(i,j)/(dist_e+dist_w);
             } else if(bctype(i,j+1) == -1) {
                 // 右边是压力为0的边界
-                source_x_temp = 0.5*(p(i,j-1))*dy;
+                source_x_temp = (p(i,j-1))*vol(i,j)/(dist_e+dist_w);
             } else if(bctype(i,j-1) == -2) {
                 // 左边是速度入口
-                source_x_temp = 0.5*(p(i,j)-p(i,j+1))*dy;
+                source_x_temp = (p(i,j)-p(i,j+1))*vol(i,j)/(dist_e+dist_w);
             } else if(bctype(i,j+1) == -2) {
                 // 右边是速度入口
-                source_x_temp = 0.5*(p(i,j-1)-p(i,j))*dy;
+                source_x_temp = (p(i,j-1)-p(i,j))*vol(i,j)/(dist_e+dist_w);
             } else if(bctype(i,j-1) != 0 && bctype(i,j+1) == 0) {
                 // 左边是其他边界，右边是内部点
-                source_x_temp = 0.5*(p(i,j)-p(i,j+1))*dy;
+                source_x_temp = (p(i,j)-p(i,j+1))*vol(i,j)/(dist_e+dist_w);
             } else if(bctype(i,j-1) == 0 && bctype(i,j+1) != 0) {
                 // 左边是内部点，右边是其他边界
-                source_x_temp = 0.5*(p(i,j-1)-p(i,j))*dy;
+                source_x_temp = (p(i,j-1)-p(i,j))*vol(i,j)/(dist_e+dist_w);
             } else {
                 // 两边都是固定边界或其他情况
                 source_x_temp = 0.0; 
@@ -1107,28 +1289,28 @@ void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,dou
             if((bctype(i-1,j) == 0 ||  bctype(i-1,j) == -3) && 
                (bctype(i+1,j) == 0 ||  bctype(i+1,j) == -3)) {
                 // 上下都是内部点或滑移边界，使用中心差分
-                source_y_temp = 0.5*(p(i+1,j)-p(i-1,j))*dx;
+                source_y_temp = (p(i+1,j)-p(i-1,j))*vol(i,j)/(dist_n+dist_s);
                 
             } else if(bctype(i-1,j) == -1) {
                 // 上边是压力为0的边界
-                source_y_temp = 0.5*(p(i+1,j))*dx;
+                source_y_temp = (p(i+1,j))*vol(i,j)/(dist_n+dist_s);
                 
             } else if(bctype(i+1,j) == -1) {
                 // 下边是压力为0的边界  压力出口
-                source_y_temp = 0.5*(-p(i-1,j))*dx;
+                source_y_temp = (-p(i-1,j))*vol(i,j)/(dist_n+dist_s);
             } else if(bctype(i-1,j) == -2) {
                 // 上边是压力为0的边界
-                source_y_temp = 0.5*(p(i+1,j)-p(i,j))*dx;
+                source_y_temp = (p(i+1,j)-p(i,j))*vol(i,j)/(dist_n+dist_s);
                 
             } else if(bctype(i+1,j) == -2) {
                 // 下边是压力为0的边界
-                source_y_temp = 0.5*(p(i,j)-p(i-1,j))*dx;
+                source_y_temp = (p(i,j)-p(i-1,j))*vol(i,j)/(dist_n+dist_s);
             } else if(bctype(i-1,j) != 0 && bctype(i+1,j) == 0) {
                 // 上边是其他边界，下边是内部点
-                source_y_temp = 0.5*(p(i+1,j)-p(i,j))*dx;
+                source_y_temp = (p(i+1,j)-p(i,j))*vol(i,j)/(dist_n+dist_s);
             } else if(bctype(i-1,j) == 0 && bctype(i+1,j) != 0) {
                 // 上边是内部点，下边是其他边界
-                source_y_temp = 0.5*(p(i,j)-p(i-1,j))*dx;
+                source_y_temp = (p(i,j)-p(i-1,j))*vol(i,j)/(dist_n+dist_s);
             } else {
                 // 上下都是固定边界或其他情况
                 source_y_temp = 0.0;
@@ -1238,10 +1420,12 @@ void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,dou
                     source_y_temp += zonev[zoneid(i+1,j)]*(D_s + max(0.0,F_s));  // 移除系数2
                 }
                 
-                A_p(i,j) = Ap_temp+dx*dy/dt;
                 
-                source_x_temp += dx*dy*mesh.u0(i,j)/dt;
-                source_y_temp += dx*dy*mesh.v0(i,j)/dt;
+                
+                A_p(i,j) = Ap_temp+vol(i,j)/dt;
+                
+                source_x_temp += vol(i,j)*mesh.u0(i,j)/dt;
+                source_y_temp += vol(i,j)*mesh.v0(i,j)/dt;
                 // 设置源项
                 source_x[n] = source_x_temp;
                 source_y[n] = source_y_temp;
@@ -1330,7 +1514,20 @@ vector<Mesh> splitMeshVertically(const Mesh& original, int n)
                 sub.bctype(i, sub_j) = original.bctype(i, orig_j);
             }
         }
+        // ===== 复制节点坐标（含虚拟网格节点）=====
+        // cell(i,j) 的节点列范围是 [j, j+1]
+        // sub node jn  <-->  orig node (start - left_ghost + jn)
+        int orig_node_col_offset = start - left_ghost;
 
+        for(int i = 0; i <= Ny; ++i)          // 节点行: 0 ~ Ny
+        {
+            for(int jn = 0; jn <= sub_nx; ++jn)  // 节点列: 0 ~ sub_nx
+            {
+                int orig_jn = orig_node_col_offset + jn;
+                sub.x(i, jn) = original.x(i, orig_jn);
+                sub.y(i, jn) = original.y(i, orig_jn);
+            }
+        }
         // ===== 设置接口 ghost =====
         for(int i = 0; i < Ny; ++i)
         {
@@ -1349,7 +1546,7 @@ vector<Mesh> splitMeshVertically(const Mesh& original, int n)
 
         sub.initializeBoundaryConditions();
         sub.createInterId();
-
+        sub.initGeometry();
         sub_meshes.push_back(sub);
 
         start += real_w;
@@ -1368,27 +1565,6 @@ vector<Mesh> splitMeshVertically(const Mesh& original, int n)
  * @param dx 输出x方向步长
  * @param dy 输出y方向步长
  */
-void readParams(const std::string& folderPath, double& dx, double& dy) {
-    std::string filePath = folderPath + "/params.txt";
-    std::ifstream file(filePath);
-
-    if (!file.is_open()) {
-        std::cerr << "无法打开文件: " << filePath << std::endl;
-        return;
-    }
-
-    std::string line;
-    std::getline(file, line);  // 跳过第一行
-
-    if (std::getline(file, line)) {
-        std::istringstream iss(line);
-        if (!(iss >> dx >> dy)) {
-            std::cerr << "读取 dx 和 dy 失败" << std::endl;
-        }
-    }
-
-    file.close();
-}
 
 /**
  * @brief 保存网格数据到文件
@@ -1423,8 +1599,8 @@ void saveMeshData(
 
         write("u", mesh.u_star);
         write("v", mesh.v_star);
-        write("bc", mesh.bctype);
-        write("zoneid", mesh.zoneid);
+        write("xc", mesh.x_c);
+        write("yc", mesh.y_c);        
         write("p", mesh.p);
 
     } catch (const std::exception& e) {
@@ -1528,10 +1704,10 @@ void verifyParameterConsistency(const std::string& mesh_folder, double dt,
                                int rank, int num_procs) 
 {
     // 检查浮点变量一致性
-    double local_vals[4] = {dx, dy, dt, mu};
-    double global_max[4], global_min[4];
-    MPI_Allreduce(local_vals, global_max, 4, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(local_vals, global_min, 4, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+    double local_vals[2] = { dt, mu};
+    double global_max[2], global_min[2];
+    MPI_Allreduce(local_vals, global_max, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(local_vals, global_min, 2, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
     
     // 检查整型变量一致性
     int local_ints[2] = {timesteps, n_splits};
@@ -1562,7 +1738,7 @@ void verifyParameterConsistency(const std::string& mesh_folder, double dt,
     // 仅rank 0打印验证结果
     if (rank == 0) {
         bool float_consistent = true;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 2; ++i) {
             if (fabs(global_max[i] - global_min[i]) > 1e-12) {
                 float_consistent = false;
             }
@@ -1583,8 +1759,6 @@ void verifyParameterConsistency(const std::string& mesh_folder, double dt,
         } else {
             std::cout << "==================== 参数同步验证 ====================" << std::endl;
             std::cout << "✓ 所有进程参数同步成功" << std::endl;
-            std::cout << "  dx = " << dx << ", dy = " << dy << std::endl;
-            std::cout << "  dt = " << dt << ", mu = " << mu << std::endl;
             std::cout << "  timesteps = " << timesteps << ", n_splits = " << n_splits << std::endl;
             std::cout << "  mesh_folder = " << mesh_folder << std::endl;
             std::cout << "======================================================\n" << std::endl;
@@ -1678,10 +1852,10 @@ void verifyParameterConsistency_unsteady(const std::string& mesh_folder, double 
                                          int rank, int num_procs) 
 {
     // 检查浮点变量一致性 (dx, dy, dt, mu)
-    double local_vals[4] = {dx, dy, dt, mu};
-    double global_max[4], global_min[4];
-    MPI_Allreduce(local_vals, global_max, 4, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(local_vals, global_min, 4, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+    double local_vals[2] = { dt, mu};
+    double global_max[2], global_min[2];
+    MPI_Allreduce(local_vals, global_max, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(local_vals, global_min, 2, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
     
     // 检查整型变量一致性 (timesteps, n_splits)
     int local_ints[2] = {timesteps, n_splits};
@@ -1712,7 +1886,7 @@ void verifyParameterConsistency_unsteady(const std::string& mesh_folder, double 
     // 仅rank 0打印验证结果
     if (rank == 0) {
         bool float_consistent = true;
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 2; ++i) {
             if (fabs(global_max[i] - global_min[i]) > 1e-12) {
                 float_consistent = false;
             }
@@ -1733,8 +1907,6 @@ void verifyParameterConsistency_unsteady(const std::string& mesh_folder, double 
         } else {
             std::cout << "==================== 参数同步验证 ====================" << std::endl;
             std::cout << "✓ 所有进程参数同步成功" << std::endl;
-            std::cout << "  dx = " << dx << ", dy = " << dy << std::endl;
-            std::cout << "  dt = " << dt << ", μ = " << mu << std::endl;
             std::cout << "  timesteps = " << timesteps << ", n_splits = " << n_splits << std::endl;
             std::cout << "  mesh_folder = " << mesh_folder << std::endl;
             std::cout << "======================================================\n" << std::endl;

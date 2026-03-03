@@ -12,8 +12,6 @@
 
 using namespace Eigen;
 using namespace std;
-// 全局变量声明
-extern double dx, dy;
 
 
 // 在其他函数声明后添加
@@ -25,6 +23,8 @@ public:
     MatrixXd v,v0,v_star;
     MatrixXd x,y;
     MatrixXd x_c,y_c;
+    MatrixXd area_e,area_w,area_s,area_n;
+    MatrixXd vol;
     MatrixXd p, p_star, p_prime;
     MatrixXd u_face, v_face;
     MatrixXi bctype,zoneid;
@@ -45,8 +45,8 @@ public:
     void setBlock(int x1, int y1, int x2, int y2, double bcValue, double zoneValue); // 设置区域边界条件
     void setZoneUV(size_t zoneIndex, double u, double v); // 设置区域速度
     void initializeBoundaryConditions();  // 初始化边界条件
-    // 保存网格到文件夹
-    void saveToFolder(const std::string& folderPath) const;
+    void initGeometry();
+
     
     
 };
@@ -126,24 +126,6 @@ vector<Mesh> splitMeshVertically(const Mesh& original_mesh, int n);
 // 文件I/O函数
 // ============================================================================
 
-/**
- * @defgroup IOFunctions 文件输入输出函数
- * @{
- */
-
-/**
- * @brief 从参数文件读取网格步长
- * @param folderPath 文件夹路径
- * @param dx 输出x方向步长
- * @param dy 输出y方向步长
- * @details
- * 文件格式(params.txt):
- * 第一行: nx ny
- * 第二行: dx dy
- * 
- * @note 如果读取失败会在stderr输出错误信息
- */
-void readParams(const std::string& folderPath, double& dx, double& dy);
 
 /**
  * @brief 保存网格数据到文件
