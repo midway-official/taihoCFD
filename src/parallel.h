@@ -28,6 +28,16 @@ void CG_parallel(Equation& equ, Mesh mesh,
                  int rank, int num_procs,
                  double& r0,int verbose=0);   
 
-
+void solveFieldCG(
+    Equation& equ,
+    Mesh& mesh,
+    MatrixXd& field,
+    double tol,
+    int max_iter,
+    int rank,
+    int num_procs,
+    double& l2_norm,
+    int verbose
+);
 
 #endif // PARALLEL_H

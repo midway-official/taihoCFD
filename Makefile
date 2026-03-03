@@ -3,8 +3,8 @@
 # ==========================================================
 
 MPICXX   := mpic++
-CXXFLAGS := -std=c++17 -O3 -Wall -Wextra
-INCLUDES := -I/usr/lib/x86_64-linux-gnu/mpich/include -Isrc
+CXXFLAGS := -std=c++17 -O3 -Wall -Wextra -march=native -ffast-math
+INCLUDES := -Isrc
 
 # ==========================================================
 # 目录

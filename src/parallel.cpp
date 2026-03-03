@@ -237,3 +237,31 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
         }
     }
 }
+
+
+void solveFieldCG(
+    Equation& equ,
+    Mesh& mesh,
+    MatrixXd& field,
+    double tol,
+    int max_iter,
+    int rank,
+    int num_procs,
+    double& l2_norm,
+    int verbose
+)
+{
+    VectorXd x(mesh.internumber);
+    x.setZero();
+
+    CG_parallel(equ, mesh, equ.source, x,
+                tol, max_iter,
+                rank, num_procs,
+                l2_norm, verbose);
+
+    vectorToMatrix(x, field, mesh);
+
+
+    exchangeColumns(field, rank, num_procs);
+    
+}

@@ -22,13 +22,35 @@ void printMatrix(const MatrixXd& matrix, const string& name, int precision ) {
     // 打印分隔线
     cout << string(40, '=') << endl;
 }
-// Mesh 类的构造函数
 Mesh::Mesh(int n_y, int n_x)
-    : u(n_y , n_x ), u_star(n_y , n_x ),u0(n_y , n_x ),
-      v(n_y , n_x ), v_star(n_y , n_x ),v0(n_y , n_x ), 
-      p(n_y , n_x ), p_star(n_y , n_x ), p_prime(n_y , n_x ),
-      u_face(n_y , n_x -1 ), v_face(n_y-1 , n_x ),bctype(n_y , n_x ),zoneid(n_y , n_x ) ,interid(n_y , n_x),nx(n_x), ny(n_y){}
+    : u(n_y, n_x),
+      u0(n_y, n_x),
+      u_star(n_y, n_x),
 
+      v(n_y, n_x),
+      v0(n_y, n_x),
+      v_star(n_y, n_x),
+
+      x(n_y + 1, n_x + 1),
+      y(n_y + 1, n_x + 1),
+
+      x_c(n_y, n_x),
+      y_c(n_y, n_x),
+
+      p(n_y, n_x),
+      p_star(n_y, n_x),
+      p_prime(n_y, n_x),
+
+      u_face(n_y, n_x - 1),
+      v_face(n_y - 1, n_x),
+
+      bctype(n_y, n_x),
+      zoneid(n_y, n_x),
+      interid(n_y, n_x),
+
+      nx(n_x),
+      ny(n_y)
+{}
 // 初始化所有矩阵为零
 void Mesh::initializeToZero() {
     u.setZero();
@@ -100,7 +122,7 @@ void Mesh::setBlock(int x1, int y1, int x2, int y2, double bcValue, double zoneV
     bctype.block(y1, x1, y2-y1+1, x2-x1+1).setConstant(bcValue);
     zoneid.block(y1, x1, y2-y1+1, x2-x1+1).setConstant(zoneValue);
 }
-void Mesh::setZoneUV(int zoneIndex, double u, double v) {
+void Mesh::setZoneUV(size_t zoneIndex, double u, double v) {
     // 确保 zoneu 和 zonev 向量足够长
     while(zoneu.size() <= zoneIndex) {
         zoneu.push_back(0.0);
@@ -385,7 +407,7 @@ void solve(Equation& equation, double epsilon, double& l2_norm, MatrixXd& phi){
 void face_velocity(Mesh& mesh, Equation& equ_u) {
     MatrixXd& u_face = mesh.u_face;
     MatrixXd& v_face = mesh.v_face;
-    MatrixXd& bctype = mesh.bctype;
+    MatrixXi& bctype = mesh.bctype;
     MatrixXd& u = mesh.u;
     MatrixXd& v = mesh.v;
     MatrixXd& p = mesh.p;
@@ -473,7 +495,7 @@ void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u)
     
     MatrixXd &u_face = mesh.u_face;
     MatrixXd &v_face = mesh.v_face;
-    MatrixXd &bctype = mesh.bctype;
+    MatrixXi &bctype = mesh.bctype;
     MatrixXd &A_p = equ_u.A_p;
     MatrixXd &Ap_p = equ_p.A_p;
     MatrixXd &Ap_e = equ_p.A_e;
@@ -481,14 +503,14 @@ void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u)
     MatrixXd &Ap_n = equ_p.A_n;
     MatrixXd &Ap_s = equ_p.A_s;
     VectorXd &source_p = equ_p.source;
-
+    equ_p.initializeToZero();
+    mesh.p_prime.setZero();
     // 遍历网格点
     for(int i = 0; i < equ_p.n_y; i++) {
         for(int j = 0; j < equ_p.n_x; j++) {
             if(bctype(i,j) == 0) {  // 内部点
                 int n = mesh.interid(i,j) ;
                 double Ap_temp = 0;
-                double source_temp = 0;
                 // 检查东面
                 if(bctype(i,j+1) == 0) {
                     Ap_e(i,j) = 0.5*(1/A_p(i,j) +1/A_p(i,j+1))*(dy*dy);
@@ -549,15 +571,16 @@ void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u)
             }
         }
     }
+    equ_p.build_matrix();
 }
 
 
-void correct_pressure(Mesh &mesh, Equation &equ_u,double alpha_p)
+void correct_pressure(Mesh &mesh,double alpha_p)
 {
     MatrixXd &p = mesh.p;
     MatrixXd &p_star = mesh.p_star;
     MatrixXd &p_prime = mesh.p_prime;
-    MatrixXd &bctype = mesh.bctype;
+    MatrixXi &bctype = mesh.bctype;
     int n_x = mesh.nx;
     int n_y = mesh.ny;
 
@@ -587,7 +610,7 @@ void correct_velocity(Mesh &mesh, Equation &equ_u)
     MatrixXd &p_prime = mesh.p_prime;
     MatrixXd &u_star = mesh.u_star;
     MatrixXd &v_star = mesh.v_star;
-    MatrixXd &bctype = mesh.bctype;
+    MatrixXi &bctype = mesh.bctype;
     MatrixXd &A_p = equ_u.A_p;
     int n_x = mesh.nx;
     int n_y = mesh.ny;
@@ -771,15 +794,11 @@ void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,do
     D_n=dx*mu/(dy);
     D_s=dx*mu/(dy);
     // 引用网格变量
-    MatrixXd &zoneid = mesh.zoneid;
-    MatrixXd &bctype = mesh.bctype;
-    MatrixXd &u= mesh.u;
-    MatrixXd &v= mesh.v;
+    MatrixXi &zoneid = mesh.zoneid;
+    MatrixXi &bctype = mesh.bctype;
     MatrixXd &u_face= mesh.u_face;
     MatrixXd &v_face= mesh.v_face;
     MatrixXd &p= mesh.p;
-    MatrixXd &p_star= mesh.p_star;
-    MatrixXd &p_prime= mesh.p_prime;
     MatrixXd &u_star= mesh.u_star;
     MatrixXd &v_star= mesh.v_star;
     MatrixXd &A_p=equ_u.A_p;
@@ -791,7 +810,10 @@ void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,do
     VectorXd &source_y=equ_v.source;
     vector<double> zoneu=mesh.zoneu;
     vector<double> zonev=mesh.zonev;
-    
+    mesh.u.setZero();
+    mesh.v.setZero();
+    equ_u.initializeToZero();
+    equ_v.initializeToZero();
     // 遍历网格
     for(i=0; i<n_y; i++) {
         for(j=0; j<n_x; j++) {
@@ -994,10 +1016,11 @@ void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,do
     equ_v.A_e = equ_u.A_e;
     equ_v.A_n = equ_u.A_n;
     equ_v.A_s = equ_u.A_s;
-    
+    equ_u.build_matrix();
+    equ_v.build_matrix();
 }
 
-void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,double dt,double alpha_uv)
+void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,double dt)
 {   
  //-1 压力出口(给定压强)
     //-2 固定速度
@@ -1015,15 +1038,11 @@ void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,dou
     D_s=dx*mu/(dy);
     
     // 引用网格变量
-    MatrixXd &zoneid = mesh.zoneid;
-    MatrixXd &bctype = mesh.bctype;
-    MatrixXd &u= mesh.u;
-    MatrixXd &v= mesh.v;
+    MatrixXi &zoneid = mesh.zoneid;
+    MatrixXi &bctype = mesh.bctype;
     MatrixXd &u_face= mesh.u_face;
     MatrixXd &v_face= mesh.v_face;
     MatrixXd &p= mesh.p;
-    MatrixXd &p_star= mesh.p_star;
-    MatrixXd &p_prime= mesh.p_prime;
     MatrixXd &u_star= mesh.u_star;
     MatrixXd &v_star= mesh.v_star;
     MatrixXd &A_p=equ_u.A_p;
@@ -1035,7 +1054,10 @@ void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,dou
     VectorXd &source_y=equ_v.source;
     vector<double> zoneu=mesh.zoneu;
     vector<double> zonev=mesh.zonev;
-    
+    mesh.u.setZero();
+    mesh.v.setZero();
+    equ_u.initializeToZero();
+    equ_v.initializeToZero();   
     // 遍历网格
     for(i=0; i<n_y; i++) {
         for(j=0; j<n_x; j++) {
@@ -1238,7 +1260,8 @@ void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,dou
     equ_v.A_e = equ_u.A_e;
     equ_v.A_n = equ_u.A_n;
     equ_v.A_s = equ_u.A_s;
-    
+    equ_u.build_matrix();
+    equ_v.build_matrix();
 }
 
 
@@ -1572,11 +1595,11 @@ void verifyParameterConsistency(const std::string& mesh_folder, double dt,
     delete[] all_strings;
 }
 
-void printSimulationSetup(const std::vector<Mesh>& sub_meshes, int n_splits, int rank) 
+void printSimulationSetup(const std::vector<Mesh>& sub_meshes, int n_splits) 
 {
     std::cout << "==================== 网格分割信息 ====================" << std::endl;
     std::cout << "总分割数: " << n_splits << " 个子网格" << std::endl;
-    for (int i = 0; i < sub_meshes.size(); i++) {
+    for (size_t i = 0; i < sub_meshes.size(); i++) {
         std::cout << "  子网格 " << i << " 尺寸: " 
                   << sub_meshes[i].nx << " × " << sub_meshes[i].ny << std::endl;
     }
@@ -1724,11 +1747,11 @@ void verifyParameterConsistency_unsteady(const std::string& mesh_folder, double 
 
 // -------------------- 打印模拟设置(非定常版本) --------------------
 void printSimulationSetup_unsteady(const std::vector<Mesh>& sub_meshes, int n_splits, 
-                                   double dt, int timesteps, int rank) 
+                                   double dt, int timesteps) 
 {
     std::cout << "==================== 网格分割信息 ====================" << std::endl;
     std::cout << "总分割数: " << n_splits << " 个子网格" << std::endl;
-    for (int i = 0; i < sub_meshes.size(); i++) {
+    for (size_t i = 0; i < sub_meshes.size(); i++) {
         std::cout << "  子网格 " << i << " 尺寸: " 
                   << sub_meshes[i].nx << " × " << sub_meshes[i].ny << std::endl;
     }

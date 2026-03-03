@@ -45,7 +45,7 @@ int main(int argc, char* argv[])
     
     std::vector<Mesh> sub_meshes = splitMeshVertically(original_mesh, n_splits);
     if (rank == 0) {
-        printSimulationSetup(sub_meshes, n_splits, rank);
+        printSimulationSetup(sub_meshes, n_splits);
     }
     
     // 检查进程数匹配
@@ -60,9 +60,6 @@ int main(int argc, char* argv[])
     
     // 每个进程获取对应子网格
     Mesh mesh = sub_meshes[rank];
-    if (rank == 0) {
-    printMatrix(mesh.zoneid,"bctype");
-    }
     // -------------------- 初始化场变量 --------------------
     mesh.u0.setZero();
     mesh.v0.setZero();
@@ -90,7 +87,7 @@ int main(int argc, char* argv[])
     const int max_iter_p = 200;   // 压力最大迭代次数
     const double stagnation_tol = 1e-4;   // 0.01% 停滞阈值
 
-    
+    double l2_norm_x, l2_norm_y, l2_norm_p;
     double prev_l2_u = -1.0;
     double prev_l2_v = -1.0;
     double prev_l2_p = -1.0;
@@ -102,35 +99,22 @@ int main(int argc, char* argv[])
     
     // ==================== SIMPLE算法主循环 ====================
     for (int n = 1; n <= timesteps; n++) {
-        MPI_Barrier(MPI_COMM_WORLD);
         
         // -------------------- 步骤1: 求解动量方程 --------------------
-        mesh.u.setZero();
-        mesh.v.setZero();
-        equ_u.initializeToZero();
-        equ_v.initializeToZero();
-        MPI_Barrier(MPI_COMM_WORLD);
         // 离散动量方程
         momentum_function(mesh, equ_u, equ_v, mu, alpha_uv);
-        equ_u.build_matrix();
-        equ_v.build_matrix();
-        
-        // 求解u和v速度场
-        VectorXd x_v(mesh.internumber), y_v(mesh.internumber);
-        x_v.setZero();
-        y_v.setZero();
-        
-        double l2_norm_x, l2_norm_y, l2_norm_p;
-        CG_parallel(equ_u, mesh, equ_u.source, x_v, tol_uv, max_iter_uv, 
-                    rank, num_procs, l2_norm_x,1);
-           
-        CG_parallel(equ_v, mesh, equ_v.source, y_v, tol_uv, max_iter_uv, 
-                    rank, num_procs, l2_norm_y,1);
-        vectorToMatrix(x_v, mesh.u, mesh);
-        vectorToMatrix(y_v, mesh.v, mesh);
-        // 交换边界数据
-        exchangeColumns(mesh.u, rank, num_procs);
-        exchangeColumns(mesh.v, rank, num_procs);
+
+        //解速度场
+        solveFieldCG(equ_u, mesh, mesh.u,
+             tol_uv, max_iter_uv,
+             rank, num_procs,
+             l2_norm_x,1);
+
+        solveFieldCG(equ_v, mesh, mesh.v,
+             tol_uv, max_iter_uv,
+             rank, num_procs,
+             l2_norm_y, 1);
+        //交换Ap 用于动量插值
         exchangeColumns(equ_u.A_p, rank, num_procs);
         
 
@@ -140,27 +124,21 @@ int main(int argc, char* argv[])
 
         
         // -------------------- 步骤3: 求解压力修正方程 --------------------
-        equ_p.initializeToZero();
+        
         pressure_function(mesh, equ_p, equ_u);
-        equ_p.build_matrix();
         
-        mesh.p_prime.setZero();
-        VectorXd p_v(mesh.internumber);
-        p_v.setZero();
-
-        CG_parallel(equ_p, mesh, equ_p.source, p_v, tol_p, max_iter_p, 
-                    rank, num_procs, l2_norm_p,1);
         
-        vectorToMatrix(p_v, mesh.p_prime, mesh);
-
-        exchangeColumns(mesh.p_prime, rank, num_procs); 
+        solveFieldCG(equ_p, mesh, mesh.p_prime,
+             tol_p, max_iter_p,
+             rank, num_procs,
+             l2_norm_p, 1);
 
         
         // -------------------- 步骤4: 修正压力和速度 --------------------
-        correct_pressure(mesh, equ_u, alpha_p);
+        correct_pressure(mesh, alpha_p);
         correct_velocity(mesh, equ_u);
         
-        // 更新压力场
+        // 更新压力场,并交换
         mesh.p = mesh.p_star;
         exchangeColumns(mesh.p, rank, num_procs);
 
@@ -225,14 +203,6 @@ int main(int argc, char* argv[])
         if (n % 5 == 0) {
             saveMeshData(mesh, rank);
         }
-        if (n % 2 == 0) {
-            saveforecastData(mesh, rank, n, mu);
-        }
-        
-            
-        
-        
-        MPI_Barrier(MPI_COMM_WORLD);
     }
     
     // ==================== 计算完成 ====================

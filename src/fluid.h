@@ -13,11 +13,8 @@
 using namespace Eigen;
 using namespace std;
 // 全局变量声明
-extern int n_x0, n_y0;
-extern double dx, dy, vx;
-extern double velocity;
-extern double l2_norm_x, l2_norm_y, l2_norm_p;
-extern double a, b;
+extern double dx, dy;
+
 
 // 在其他函数声明后添加
 void printMatrix(const MatrixXd& matrix, const string& name, int precision = 4);
@@ -26,9 +23,11 @@ class Mesh {
 public:
     MatrixXd u,u0,u_star;
     MatrixXd v,v0,v_star;
+    MatrixXd x,y;
+    MatrixXd x_c,y_c;
     MatrixXd p, p_star, p_prime;
     MatrixXd u_face, v_face;
-    MatrixXd bctype,zoneid;
+    MatrixXi bctype,zoneid;
     MatrixXi interid; 
     int internumber;
     int nx, ny;  // 添加网格尺寸成员
@@ -44,7 +43,7 @@ public:
     void displayAll() const; // 显示所有矩阵
     void createInterId(); // 创建内部点编号
     void setBlock(int x1, int y1, int x2, int y2, double bcValue, double zoneValue); // 设置区域边界条件
-    void setZoneUV(int zoneIndex, double u, double v); // 设置区域速度
+    void setZoneUV(size_t zoneIndex, double u, double v); // 设置区域速度
     void initializeBoundaryConditions();  // 初始化边界条件
     // 保存网格到文件夹
     void saveToFolder(const std::string& folderPath) const;
@@ -72,7 +71,7 @@ void face_velocity(Mesh &mesh,Equation &equ_u);
 void pressure_function(Mesh &mesh, Equation &equ_p, Equation &equ_u);
 
 //修正压力
-void correct_pressure(Mesh &mesh,Equation &equ_u,double alpha_p);
+void correct_pressure(Mesh &mesh,double alpha_p);
 
 
 void correct_velocity(Mesh &mesh,Equation &equ_u);
@@ -85,7 +84,7 @@ void show_progress_bar(int current_step, int total_steps, double elapsed_time);
 //离散动量方程
 
 void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,double re,double alpha_uv);
-void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,double dt,double alpha_uv);
+void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,double dt);
 
 
 
@@ -196,7 +195,7 @@ void broadcastParameters(std::string& mesh_folder, double& dt, int& timesteps,
 void verifyParameterConsistency(const std::string& mesh_folder, double dt, 
                                int timesteps, double mu, int n_splits, 
                                int rank, int num_procs);
-void printSimulationSetup(const std::vector<Mesh>& sub_meshes, int n_splits, int rank);
+void printSimulationSetup(const std::vector<Mesh>& sub_meshes, int n_splits);
 bool checkConvergence(double norm_res_x, double norm_res_y, double norm_res_p);
 // ==================== 非定常求解器辅助函数声明 ====================
 // 添加到 fluid.h 文件中
@@ -216,7 +215,7 @@ void verifyParameterConsistency_unsteady(const std::string& mesh_folder, double 
 
 // 打印模拟设置(非定常版本)
 void printSimulationSetup_unsteady(const std::vector<Mesh>& sub_meshes, int n_splits, 
-                                   double dt, int timesteps, int rank);
+                                   double dt, int timesteps);
 
 // 收敛性检查
 bool checkConvergence(double norm_res_x, double norm_res_y, double norm_res_p);
