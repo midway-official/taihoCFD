@@ -66,7 +66,7 @@ void matrixToVector(const MatrixXd& phi, VectorXd& x, const Mesh& mesh) {
         }
     }
 }
-void Parallel_correction(Mesh mesh,Equation equ,MatrixXd &phi1,MatrixXd &phi2){
+void Parallel_correction(Mesh& mesh,Equation& equ,MatrixXd &phi1,MatrixXd &phi2){
 for (int i = 0; i < mesh.ny ; i++) {
         for (int j = 0; j < mesh.nx ; j++) {
             if (mesh.bctype(i, j) == 0) { // 仅处理内部点
@@ -84,7 +84,7 @@ for (int i = 0; i < mesh.ny ; i++) {
         }
     }
 }
-void Parallel_correction2(Mesh mesh,Equation equ,MatrixXd &phi1,MatrixXd &phi2){
+void Parallel_correction2(Mesh& mesh,Equation& equ,MatrixXd &phi1,MatrixXd &phi2){
 for (int i = 0; i < mesh.ny ; i++) {
         for (int j = 0; j < mesh.nx ; j++) {
             if (mesh.bctype(i, j) == 0) { // 仅处理内部点
@@ -107,7 +107,7 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
                  int verbose) {
     
     int n = equ.A.rows();
-    SparseMatrix<double> A = equ.A;
+    const SparseMatrix<double>& A = equ.A;  // 零拷贝
 
     // ===== 1. 初始化残差 r = b - Ax =====
     VectorXd r = b - A * x; 
@@ -156,14 +156,16 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
     int exit_status = 0; // 0:运行, 1:收敛, 2:停滞, 3:数值失效
     int iter = 0;
     double current_global_r_norm_sq = global_r_norm_sq;
-
+    MatrixXd p_field = MatrixXd::Zero(mesh.ny, mesh.nx);
+    MatrixXd Ap_field = MatrixXd::Zero(mesh.ny, mesh.nx);
     // ===== 4. CG 迭代 =====
     while (iter < max_iter) {
+        p_field.setZero();    
+        Ap_field.setZero();   
         // --- 计算 Ap ---
         Ap = A * p; 
         
-        MatrixXd p_field = MatrixXd::Zero(mesh.ny, mesh.nx);
-        MatrixXd Ap_field = MatrixXd::Zero(mesh.ny, mesh.nx);
+
         
         vectorToMatrix(p, p_field, mesh);
         vectorToMatrix(Ap, Ap_field, mesh);
@@ -243,7 +245,7 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
                  double& r0, int verbose) {
     
     int n = equ.A.rows();
-    SparseMatrix<double> A = equ.A;
+    const SparseMatrix<double>& A = equ.A;  // 零拷贝
 
     // ★ 1. 构建Jacobi预条件（仅一次，O(N)，无通信）
     VectorXd inv_diag(n);
@@ -309,14 +311,15 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
     int exit_status = 0, iter = 0;
 
     double current_rz = global_rz;  // ★ 保存当前 r·z（替代原来的 r·r）
-
+    MatrixXd p_field  = MatrixXd::Zero(mesh.ny, mesh.nx);
+    MatrixXd Ap_field = MatrixXd::Zero(mesh.ny, mesh.nx);
     // ===== PCG 迭代 =====
     while (iter < max_iter) {
-
+        p_field.setZero();    
+        Ap_field.setZero();  
         // Ap计算（与原来完全相同）
         Ap = A * p;
-        MatrixXd p_field  = MatrixXd::Zero(mesh.ny, mesh.nx);
-        MatrixXd Ap_field = MatrixXd::Zero(mesh.ny, mesh.nx);
+
         vectorToMatrix(p,  p_field,  mesh);
         vectorToMatrix(Ap, Ap_field, mesh);
         exchangeColumns(p_field, rank, num_procs);

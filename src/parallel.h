@@ -17,8 +17,8 @@ void vectorToMatrix(const VectorXd& x, MatrixXd& phi, const Mesh& mesh);
 
 void matrixToVector(const MatrixXd& phi, VectorXd& x, const Mesh& mesh);
 
-void Parallel_correction(Mesh mesh,Equation equ,MatrixXd &phi1,MatrixXd &phi2);
-void Parallel_correction2(Mesh mesh,Equation equ,MatrixXd &phi1,MatrixXd &phi2);
+void Parallel_correction(Mesh& mesh,Equation& equ,MatrixXd &phi1,MatrixXd &phi2);
+void Parallel_correction2(Mesh& mesh,Equation& equ,MatrixXd &phi1,MatrixXd &phi2);
 
 
 
