@@ -1,4 +1,4 @@
-# DNS-SIMPLE：二维不可压缩 Navier-Stokes 求解器
+# Taiho-CFD：二维不可压缩 Navier-Stokes 求解器
 
 基于有限体积法（FVM）和 SIMPLE 算法的二维不可压缩 Navier-Stokes 方程 MPI 并行求解器，支持定常与非定常两种计算模式。
 
