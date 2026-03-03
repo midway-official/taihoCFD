@@ -1,218 +1,255 @@
-# Taiho 流体力学求解器套件
+# DNS-SIMPLE：二维不可压缩 Navier-Stokes 求解器
 
-## 项目简介
+基于有限体积法（FVM）和 SIMPLE 算法的二维不可压缩 Navier-Stokes 方程 MPI 并行求解器，支持定常与非定常两种计算模式。
 
-Taiho 是一个基于有限体积法的并行流体力学计算流体动力学(CFD)求解器套件,采用 C++ 开发,支持 MPI 并行计算。该套件实现了多种经典求解算法,适用于不可压缩流动问题的数值模拟。
+---
 
-### 主要功能
+## 目录
 
-- **网格生成**: 支持结构化直角网格生成,可灵活设置边界条件和障碍物
-- **多种求解器**:
-  - **SIMPLE 稳态求解器**: 半隐式压力连接方程算法(Semi-Implicit Method for Pressure-Linked Equations),用于稳态问题
-  - **SIMPLE 非定常求解器**: SIMPLE 算法的非定常版本
-- **并行计算**: 基于 MPI 的区域分解并行,支持垂直方向网格分割
-- **灵活的边界条件**: 支持固壁、入口、出口等多种边界条件设置
+- [功能特性](#功能特性)
+- [项目结构](#项目结构)
+- [依赖环境](#依赖环境)
+- [编译](#编译)
+- [网格生成](#网格生成)
+- [运行](#运行)
+- [边界条件说明](#边界条件说明)
+- [网格文件格式](#网格文件格式)
+- [后处理](#后处理)
+- [算法说明](#算法说明)
+- [示例：顶盖驱动方腔流](#示例顶盖驱动方腔流)
 
-## 系统依赖
+---
 
-### 必需的库和工具
+## 功能特性
 
-1. **编译器**: 支持 C++17 标准的编译器(如 g++ 7.0+)
-2. **MPI 库**: MPICH 或 OpenMPI
-   ```bash
-   sudo apt-get install mpich libmpich-dev
-   ```
-3. **Eigen3 库**: 线性代数库
-   ```bash
-   sudo apt-get install libeigen3-dev
-   ```
-4. **标准库**: C++17 filesystem 支持
+- **SIMPLE 算法**：压力速度耦合，支持松弛因子调节
+- **定常 / 非定常**：分别对应 `solver_simple_steady` 和 `solver_simple_unsteady`
+- **MPI 并行**：沿 x 方向域分解，ghost 层自动交换
+- **非结构化四边形网格**：支持非均匀拉伸网格，几何量（面积、体积）自动计算
+- **并行线性求解器**：CG（共轭梯度）和 PCG（预条件共轭梯度，Jacobi 预条件）
+- **多种边界条件**：无滑移壁面、速度入口、压力出口、并行接口层
+- **自动收敛检测**：残差收敛 + 停滞退出双重机制
 
-### 安装验证
+---
+
+## 项目结构
+
+```
+.
+├── src/
+│   ├── fluid.h                      # 核心数据结构与函数声明
+│   ├── fluid.cpp                    # Mesh / Equation 类实现，SIMPLE 各步骤函数
+│   ├── parallel.h                   # 并行函数声明
+│   ├── parallel.cpp                 # MPI 列交换、并行 CG/PCG 求解器
+│   ├── solver_simple_steady.cpp     # 定常求解器主程序
+│   └── solver_simple_unsteady.cpp   # 非定常求解器主程序
+├── Makefile
+├── gen_cavity.py                    # 顶盖方腔网格生成脚本（示例）
+└── postprocess.py                   # 后处理与可视化脚本
+```
+
+---
+
+## 依赖环境
+
+| 依赖 | 版本要求 | 说明 |
+|------|----------|------|
+| MPI  | 任意标准实现（OpenMPI / MPICH） | 并行通信 |
+| Eigen | ≥ 3.4 | 稀疏矩阵与线性代数 |
+| C++ 编译器 | 支持 C++17 | `std::filesystem` 等 |
+| Python 3 | ≥ 3.8（后处理可选） | numpy / matplotlib / scipy |
+
+Ubuntu / Debian 安装示例：
 
 ```bash
-# 检查 MPI 安装
-mpic++ --version
-
-# 检查 Eigen3 安装
-ls /usr/include/eigen3/
+sudo apt install libopenmpi-dev libeigen3-dev
+pip install numpy matplotlib scipy
 ```
 
-## 编译方法
+---
 
-### 编译所有程序
+## 编译
 
 ```bash
-make all
+make          # 同时编译定常与非定常求解器
+make clean    # 清理构建产物
 ```
 
-### 编译单个程序
+编译成功后生成两个可执行文件：
+
+```
+solver_simple_steady
+solver_simple_unsteady
+```
+
+---
+
+## 网格生成
+
+使用 `gen_cavity.py`（以顶盖驱动方腔为例）生成所需网格文件：
 
 ```bash
-make solver_simple_steady   # 仅编译 SIMPLE 稳态求解器
-make solver_simple_unsteady # 仅编译 SIMPLE 非定常求解器
+python gen_cavity.py
 ```
 
-### 清理编译文件
+脚本会在 `ldc_exp/` 目录下生成以下文件（详见[网格文件格式](#网格文件格式)）：
+
+```
+ldc_exp/
+├── params.txt     # 网格尺寸
+├── x.dat          # 节点 x 坐标  (ny+1)×(nx+1)
+├── y.dat          # 节点 y 坐标  (ny+1)×(nx+1)
+├── bctype.dat     # 边界类型     ny×nx
+├── zoneid.dat     # 区域编号     ny×nx
+└── zoneuv.txt     # 各区域速度值
+```
+
+可调整的参数：
+
+```python
+generate_lid_driven_cavity(
+    nx=100, ny=100,       # 网格分辨率
+    Lx=1.0, Ly=1.0,       # 计算域尺寸
+    lid_u=1.0, lid_v=0.0, # 顶盖速度
+    alpha_x=5.0,          # x 方向拉伸系数（越大壁面越密）
+    alpha_y=5.0,          # y 方向拉伸系数
+    output_dir="ldc_exp",
+)
+```
+
+---
+
+## 运行
+
+### 定常求解器
 
 ```bash
-make clean
+# 命令行传参
+mpirun -np <进程数> ./solver_simple_steady <网格文件夹> <迭代步数> <动力粘度>
+
+# 示例：4 进程，最多 500 步，Re=100（mu=0.01）
+mpirun -np 4 ./solver_simple_steady ldc_exp 500 0.01
+
+# 交互式输入（不带参数运行）
+mpirun -np 4 ./solver_simple_steady
 ```
 
-## 使用说明
-
-### 1. 网格生成
-
-#### 运行方式
+### 非定常求解器
 
 ```bash
-./mesh_generation
+# 命令行传参
+mpirun -np <进程数> ./solver_simple_unsteady <网格文件夹> <时间步长dt> <总时间步数> <动力粘度>
+
+# 示例：4 进程，dt=0.01，共 200 步，Re=100
+mpirun -np 4 ./solver_simple_unsteady ldc_exp 0.01 200 0.01
 ```
 
-#### 交互式输入
+> **注意**：MPI 进程数必须与程序内部网格分割数完全一致（程序自动读取 `MPI_Comm_size`）。
 
-程序会提示输入以下参数:
-- **x方向划分个数**: 网格在 x 方向的单元数
-- **y方向划分个数**: 网格在 y 方向的单元数
-- **长度**: 计算域的特征长度
-- **inlet速度**: 入口速度
+### 关键求解参数（在源码中调整）
 
-#### 修改网格生成逻辑
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `alpha_p` | 0.1 | 压力松弛因子 |
+| `alpha_uv` | 0.3 | 动量松弛因子（仅定常） |
+| `tol_uv` | 1e-7 / 1e-5 | 速度方程求解精度 |
+| `tol_p` | 1e-7 / 1e-5 | 压力修正方程求解精度 |
+| `max_iter_uv` | 25 | 速度 CG 最大迭代次数 |
+| `max_iter_p` | 200 | 压力 CG 最大迭代次数 |
 
-编辑 `mesh_generation.cpp` 中的 `main` 函数,关键代码说明:
+---
 
-```cpp
-// 创建网格
-Mesh mesh(n_y0, n_x0);  // 参数: (y方向单元数, x方向单元数)
+## 边界条件说明
 
-// 设置边界条件
-// setBlock(x1, y1, x2, y2, bcValue, zoneValue)
-// bcValue: 边界类型 (-2=入口, -1=出口, 1=固壁)
-// zoneValue: 区域ID,用于设置速度
-mesh.setBlock(0, 0, mesh.nx+1, 0, 1, 0);  // 设置上边界为固壁
+`bctype` 矩阵中各值的含义：
 
-// 设置障碍物示例
-mesh.setBlock(30, (mesh.ny/2)-4, L+30, (mesh.ny/2), 1, 1);
+| 值 | 类型 | 说明 |
+|----|------|------|
+| `0` | 内部点 | 参与方程求解 |
+| `> 0`（如 `1`） | 无滑移壁面 | 速度由 `zoneuv.txt` 指定 |
+| `-1` | 压力出口 | 给定压强（零表压） |
+| `-2` | 速度入口 | 给定速度，由 `zoneuv.txt` 指定 |
+| `-3` | MPI 并行接口 | 程序自动生成，用户无需设置 |
 
-// 设置区域速度
-// setZoneUV(zoneID, u速度, v速度)
-mesh.setZoneUV(0, 0.0, 0.0);  // 区域0默认速度
-mesh.setZoneUV(2, vx, 0.0);   // 区域2入口速度
+---
 
-// 保存网格
-mesh.saveToFolder("网格文件夹名称");
+## 网格文件格式
+
+### `params.txt`
+```
+<nx> <ny>
 ```
 
-### 2. PISO 求解器(非定常)
+### `x.dat` / `y.dat`
+形状为 `(ny+1) × (nx+1)` 的节点坐标矩阵，行优先存储。
 
-#### 命令行参数模式
+### `bctype.dat` / `zoneid.dat`
+形状为 `ny × nx` 的整数矩阵，行优先存储。
+
+### `zoneuv.txt`
+每行对应一个 zone 的 `(u, v)` 速度，行号即 `zoneid` 值：
+```
+0.0  0.0    # zone 0：静止壁面
+1.0  0.0    # zone 1：顶盖，u=1
+```
+
+---
+
+## 后处理
+
+计算结束后，每个 MPI 进程会输出以下文件（`<rank>` 为进程编号）：
+
+```
+u_<rank>.dat    # x 方向速度
+v_<rank>.dat    # y 方向速度
+p_<rank>.dat    # 压力场
+xc_<rank>.dat   # 单元中心 x 坐标
+yc_<rank>.dat   # 单元中心 y 坐标
+```
+
+运行后处理脚本将各进程结果拼接并可视化：
 
 ```bash
-./solver_PISO <网格文件夹> <时间步长> <时间步数> <粘度> 
+python postprocess.py
+# 输入提示：请输入子进程数量 - 1（例如并行4个进程则输入3）
 ```
 
-**示例**:
-```bash
-mpirun -np 4 ./solver_PISO test2 0.001 1000 0.01 
+脚本将输出：
+- `u/v/p/xc/yc_combined.dat`：拼接后的全局场数据
+- 速度幅值云图
+- 压力云图
+- 流线图
+
+---
+
+## 算法说明
+
+求解器采用经典 **SIMPLE**（Semi-Implicit Method for Pressure-Linked Equations）算法，每次迭代包含以下步骤：
+
+```
+1. 离散动量方程  →  求解 u*, v*（预测速度）
+2. Rhie-Chow 动量插值  →  计算面速度 u_face, v_face
+3. 构建压力修正方程  →  求解 p'
+4. 修正压力  p = p* + α_p · p'
+5. 修正速度  u* ← u* + f(p')
+6. 收敛判断（残差 + 停滞检测）
 ```
 
-#### 交互式模式
+并行策略采用沿 x 方向的**域分解**，相邻子域间各设置 2 层 ghost 单元（`bctype=-3`），通过 `MPI_Sendrecv` 进行边界数据交换，通信在每次 CG 迭代中进行 Ap 修正。
 
-```bash
-./solver_PISO
-```
-然后按提示输入各参数。
+---
 
-#### 参数说明
-
-- **网格文件夹**: 网格数据存储路径(由 mesh_generation 生成)
-- **时间步长**: 每个时间步的大小(如 0.001)
-- **时间步数**: 总共计算的时间步数
-- **粘度**: 流体动力粘度系数
-- **并行进程数**: MPI 并行进程数,应与 `mpirun -np` 的数值一致
-
-### 3. SIMPLE 稳态求解器
-
-#### 命令行参数模式
-
-```bash
-./solver_simple_steady <网格文件夹> <迭代步数> <粘度> 
-```
-
-**示例**:
-```bash
-mpirun -np 4 ./solver_simple_steady test2 500 0.01 
-```
-
-#### 参数说明
-
-- **网格文件夹**: 网格数据存储路径
-- **迭代步数**: 稳态求解的迭代次数
-- **粘度**: 流体动力粘度系数
-- **并行进程数**: MPI 并行进程数
-
-**注意**: 稳态求解器不需要输入时间步长参数,仅。
-
-### 4. SIMPLE 非定常求解器
-
-#### 命令行参数模式
+## 示例：顶盖驱动方腔流
 
 ```bash
-./solver_simple_unsteady <网格文件夹> <时间步数> <粘度> 
+# 1. 生成 100×100 拉伸网格
+python gen_cavity.py
+
+# 2. 使用 4 进程定常求解，Re=100
+mpirun -np 4 ./solver_simple_steady ldc_exp 1000 0.01
+
+# 3. 后处理与可视化（4进程，输入3）
+python postprocess.py
 ```
 
-**示例**:
-```bash
-mpirun -np 4 ./solver_simple_unsteady test2 1000 0.01 
-```
-
-参数说明同 PISO 求解器。
-
-## 典型工作流程
-
-```bash
-# 1. 生成网格
-./mesh_generation
-# 按提示输入: x划分=100, y划分=50, 长度=1.0, 入口速度=1.0
-
-# 2. 运行求解器(选择一个)
-# 非定常问题用 PISO
-mpirun -np 4 ./solver_PISO test2 0.001 1000 0.01 
-
-# 稳态问题用 SIMPLE
-mpirun -np 4 ./solver_simple_steady test2 500 0.01 
-```
-
-## 并行计算说明
-
-- 程序采用垂直方向(y方向)区域分解
-- 并行进程数应能整除网格的 y 方向单元数,以获得均匀分割
-- 使用 `mpirun -np N` 启动,其中 N 应与命令行参数中的并行进程数一致
-
-## 输出文件
-
-求解器运行后会在指定目录生成:
-- 速度场数据
-- 压力场数据
-- 计算残差信息
-
-## 常见问题
-
-1. **编译错误: 找不到 Eigen3**
-   - 确认已安装 libeigen3-dev
-   - 检查 `/usr/include/eigen3/` 是否存在
-
-2. **MPI 错误**
-   - 确保 `mpirun -np N` 的 N 值与程序参数中的并行进程数一致
-   - 检查 MPICH 是否正确安装
-
-3. **网格生成失败**
-   - 确保 x、y 方向划分数为正整数
-   - 检查边界条件设置是否合理
-
-## 技术支持
-
-如需修改求解算法或添加新功能,请参考:
-- `fluid.h` / `fluid.cpp`: 核心网格和求解器类
-- `parallel.h` / `parallel.cpp`: 并行通信接口
-- 各求解器源文件: 具体算法实现
+预期结果：中心处出现主涡，四角出现次级涡，与 Ghia et al. (1982) 基准解吻合。
