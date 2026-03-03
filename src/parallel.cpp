@@ -7,112 +7,6 @@ int total_comm_count = 0;     // 通信次数
 double start_time, end_time;
 int totalcount = 0;  
 
-double computeHash(const vector<double>& data) {
-    double hash = 2166136261.0;  // FNV offset basis
-    const double prime = 16777619.0;
-    for (double val : data) {
-        hash = fmod((hash * prime), 1e18);  // 保持数值稳定
-        hash += val;
-    }
-    return hash;
-}
-
-// 发送矩阵列数据，并验证哈希值
-void sendMatrixColumnWithSafety(const MatrixXd& src_matrix, int src_col, 
-    vector<double>& send_buffer, 
-    int target_rank, int tag) {
-int rows = src_matrix.rows();
-send_buffer.resize(rows + 1);  // 多一个位置放 hash
-
-for (int i = 0; i < rows; i++) {
-send_buffer[i+1] = src_matrix(i, src_col);
-}
-
-double hash_value = computeHash(vector<double>(send_buffer.begin() + 1, send_buffer.end()));
-send_buffer[0] = hash_value;
-
-MPI_Request request;
-MPI_Isend(send_buffer.data(), rows+1, MPI_DOUBLE, target_rank, tag, MPI_COMM_WORLD, &request);
-MPI_Wait(&request, MPI_STATUS_IGNORE);
-}
-void recvMatrixColumnWithSafety(vector<double>& recv_buffer, int src_rank, int tag) {
-    int rows = recv_buffer.size();
-    vector<double> full_buffer(rows + 1);  // 接收 hash+数据
-
-    MPI_Request request;
-    MPI_Irecv(full_buffer.data(), rows+1, MPI_DOUBLE, src_rank, tag, MPI_COMM_WORLD, &request);
-    MPI_Wait(&request, MPI_STATUS_IGNORE);
-
-    double recv_hash = full_buffer[0];
-    for (int i = 0; i < rows; i++) {
-        recv_buffer[i] = full_buffer[i+1];
-    }
-
-    double computed_hash = computeHash(recv_buffer);
-    if (abs(computed_hash - recv_hash) > 1e-5) {
-        cerr << "数据校验失败！哈希不匹配！" << endl;
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-}
-/*
-void exchangeColumns(MatrixXd& matrix, int rank, int num_procs) {
-    const int rows = matrix.rows();
-    const int cols = matrix.cols();
- 
-    // 初始化缓冲区，先全置 0
-    vector<double> send_left_0(rows, 0.0), send_left_1(rows, 0.0);
-    vector<double> send_right_0(rows, 0.0), send_right_1(rows, 0.0);
-    vector<double> recv_left_0(rows, 0.0), recv_left_1(rows, 0.0);
-    vector<double> recv_right_0(rows, 0.0), recv_right_1(rows, 0.0);
- 
-    // 填充发送数据
-    for (int i = 0; i < rows; i++) {
-        send_left_0[i]  = matrix(i, 2);
-        send_left_1[i]  = matrix(i, 3);
-        send_right_0[i] = matrix(i, cols - 4);
-        send_right_1[i] = matrix(i, cols - 3);
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
-    int left_rank  = (rank == 0) ? MPI_PROC_NULL : rank - 1;
-    int right_rank = (rank == num_procs - 1) ? MPI_PROC_NULL : rank + 1;
-
-    // 左邻居通信
-    if (left_rank != MPI_PROC_NULL) {
-        sendMatrixColumnWithSafety(matrix, 2, send_left_0, left_rank, 0);
-        sendMatrixColumnWithSafety(matrix, 3, send_left_1, left_rank, 1);
-        // 先清空接收缓冲区，虽然构造时是0，这里显式清一下更安全
-        std::fill(recv_left_0.begin(), recv_left_0.end(), 0.0);
-        std::fill(recv_left_1.begin(), recv_left_1.end(), 0.0);
-        recvMatrixColumnWithSafety(recv_left_0, left_rank, 2);
-        recvMatrixColumnWithSafety(recv_left_1, left_rank, 3);
-    }
-
-    // 右邻居通信
-    if (right_rank != MPI_PROC_NULL) {
-        sendMatrixColumnWithSafety(matrix, cols - 4, send_right_0, right_rank, 2);
-        sendMatrixColumnWithSafety(matrix, cols - 3, send_right_1, right_rank, 3);
-        // 同样清空接收缓冲区
-        std::fill(recv_right_0.begin(), recv_right_0.end(), 0.0);
-        std::fill(recv_right_1.begin(), recv_right_1.end(), 0.0);
-        recvMatrixColumnWithSafety(recv_right_0, right_rank, 0);
-        recvMatrixColumnWithSafety(recv_right_1, right_rank, 1);
-    }
-
-    // 更新矩阵
-    if (left_rank != MPI_PROC_NULL) {
-        for (int i = 0; i < rows; i++) {
-            matrix(i, 0) = recv_left_0[i];
-            matrix(i, 1) = recv_left_1[i];
-        }
-    }
-    if (right_rank != MPI_PROC_NULL) {
-        for (int i = 0; i < rows; i++) {
-            matrix(i, cols - 2) = recv_right_0[i];
-            matrix(i, cols - 1) = recv_right_1[i];
-        }
-    }
-}*/
-
 
 
 
@@ -188,12 +82,10 @@ void exchangeColumns(MatrixXd& matrix, int rank, int num_procs) {
     }
     MPI_Comm_free(&cart_comm);
 }
-
-
 // 从解向量转换为场矩阵
 void vectorToMatrix(const VectorXd& x, MatrixXd& phi, const Mesh& mesh) {
-    for (int i = 0; i <= mesh.ny + 1; i++) {
-        for (int j = 0; j <= mesh.nx + 1; j++) {
+    for (int i = 0; i < mesh.ny ; i++) {
+        for (int j = 0; j < mesh.nx ; j++) {
             if (mesh.bctype(i, j) == 0) { // 仅处理内部点
                 int n = mesh.interid(i, j) ; // 获取对应的解向量索引
                 phi(i, j) = x[n];
@@ -201,13 +93,10 @@ void vectorToMatrix(const VectorXd& x, MatrixXd& phi, const Mesh& mesh) {
         }
     }
 }
-
-
-
 // 从场矩阵转换为解向量
 void matrixToVector(const MatrixXd& phi, VectorXd& x, const Mesh& mesh) {
-    for (int i = 0; i <= mesh.ny + 1; i++) {
-        for (int j = 0; j <= mesh.nx + 1; j++) {
+    for (int i = 0; i < mesh.ny ; i++) {
+        for (int j = 0; j < mesh.nx ; j++) {
             if (mesh.bctype(i, j) == 0) { // 仅处理内部点
                 int n = mesh.interid(i, j) ; // 获取对应的解向量索引
                 x[n] = phi(i, j);
@@ -215,12 +104,9 @@ void matrixToVector(const MatrixXd& phi, VectorXd& x, const Mesh& mesh) {
         }
     }
 }
-
-
-
 void Parallel_correction(Mesh mesh,Equation equ,MatrixXd &phi1,MatrixXd &phi2){
-for (int i = 0; i <= mesh.ny + 1; i++) {
-        for (int j = 0; j <= mesh.nx + 1; j++) {
+for (int i = 0; i < mesh.ny ; i++) {
+        for (int j = 0; j < mesh.nx ; j++) {
             if (mesh.bctype(i, j) == 0) { // 仅处理内部点
                 if (mesh.bctype(i, j+1) == -3)
                 {
@@ -237,8 +123,8 @@ for (int i = 0; i <= mesh.ny + 1; i++) {
     }
 }
 void Parallel_correction2(Mesh mesh,Equation equ,MatrixXd &phi1,MatrixXd &phi2){
-for (int i = 0; i <= mesh.ny + 1; i++) {
-        for (int j = 0; j <= mesh.nx + 1; j++) {
+for (int i = 0; i < mesh.ny ; i++) {
+        for (int j = 0; j < mesh.nx ; j++) {
             if (mesh.bctype(i, j) == 0) { // 仅处理内部点
                 if (mesh.bctype(i, j+1) == -3)
                 {
@@ -264,8 +150,8 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
     // ===== 1. 初始化残差 r = b - Ax =====
     VectorXd r = b - A * x; 
 
-    MatrixXd r_field = MatrixXd::Zero(mesh.ny+2, mesh.nx+2);
-    MatrixXd x_field = MatrixXd::Zero(mesh.ny+2, mesh.nx+2);
+    MatrixXd r_field = MatrixXd::Zero(mesh.ny, mesh.nx);
+    MatrixXd x_field = MatrixXd::Zero(mesh.ny, mesh.nx);
 
     vectorToMatrix(r, r_field, mesh);
     vectorToMatrix(x, x_field, mesh);
@@ -314,8 +200,8 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
         // --- 计算 Ap ---
         Ap = A * p; 
         
-        MatrixXd p_field = MatrixXd::Zero(mesh.ny+2, mesh.nx+2);
-        MatrixXd Ap_field = MatrixXd::Zero(mesh.ny+2, mesh.nx+2);
+        MatrixXd p_field = MatrixXd::Zero(mesh.ny, mesh.nx);
+        MatrixXd Ap_field = MatrixXd::Zero(mesh.ny, mesh.nx);
         
         vectorToMatrix(p, p_field, mesh);
         vectorToMatrix(Ap, Ap_field, mesh);
@@ -323,38 +209,29 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
         exchangeColumns(p_field, rank, num_procs);
         Parallel_correction(mesh, equ, Ap_field, p_field);
         matrixToVector(Ap_field, Ap, mesh);
-
         // --- 计算步长 alpha ---
         double local_dot_p_Ap = p.dot(Ap);
         double global_dot_p_Ap = 0.0;
         MPI_Allreduce(&local_dot_p_Ap, &global_dot_p_Ap, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
         // 数学安全检查：如果分母过小，可能矩阵非正定或已陷入数值陷阱
         if (std::abs(global_dot_p_Ap) < 1e-18) {
             exit_status = 3;
         }
-
         if (exit_status == 0) {
             double alpha = current_global_r_norm_sq / global_dot_p_Ap;
-
             // --- 更新解和残差 ---
             x += alpha * p;
             r -= alpha * Ap;
-
             double local_new_r_sq = r.squaredNorm();
             double global_new_r_sq = 0.0;
             MPI_Allreduce(&local_new_r_sq, &global_new_r_sq, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-
-            double current_r_norm = std::sqrt(global_new_r_sq);
-            
+            double current_r_norm = std::sqrt(global_new_r_sq);            
             // --- 计算共轭方向 beta ---
             double beta = global_new_r_sq / current_global_r_norm_sq;
             p = r + beta * p;
-
             current_global_r_norm_sq = global_new_r_sq;
             r0 = current_r_norm;
             iter++;
-
             // ===== 5. 鲁棒性判断逻辑 (仅 Rank 0) =====
             if (rank == 0) {
                 double rel_res = r0 / initial_r_norm;
@@ -379,12 +256,10 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
                 prev_r_norm = r0;
             }
         }
-
         // 广播退出状态
         MPI_Bcast(&exit_status, 1, MPI_INT, 0, MPI_COMM_WORLD);
         if (exit_status != 0) break;
     }
-
     // ===== 6. 日志打印 =====
     if (rank == 0 && verbose == 1) {
         if (exit_status == 1) {
@@ -392,11 +267,11 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
                       << r0 / initial_r_norm << " (" << iter << " iterations)" << std::endl;
         } else if (exit_status == 2) {
             std::cout << "  [CG] 停滞退出: 连续 " << max_stagnation << " 步下降率低于 " 
-                      << stagnation_tol << " (Final Rel.Res: " << r0/initial_r_norm << ")" << std::endl;
+                      << stagnation_tol << " (Final Rel.Res: " << r0/initial_r_norm << ")"<< " (" << iter << " iterations)" << std::endl;
         } else if (exit_status == 3) {
             std::cout << "  [CG] 错误: 数学失效 (p,Ap) ≈ 0" << std::endl;
         } else {
-            std::cout << "  [CG] 达到最大迭代次数. Rel.Res: " << r0/initial_r_norm << std::endl;
+            std::cout << "  [CG] 达到最大迭代次数. Rel.Res: " << r0/initial_r_norm << " (" << iter << " iterations)" << std::endl;
         }
     }
 }

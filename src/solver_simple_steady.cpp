@@ -23,7 +23,7 @@ int main(int argc, char* argv[])
     double dt = 0.1;
     double mu;
     int timesteps, n_splits;
-    
+    MPI_Comm_size(MPI_COMM_WORLD, &n_splits);  // 获取 MPI 总进程数
     // 读取输入参数(仅rank 0)
     if (rank == 0) {
         parseInputParameters(argc, argv, mesh_folder, timesteps, mu, n_splits);
@@ -42,8 +42,8 @@ int main(int argc, char* argv[])
     
     // -------------------- 网格分割 --------------------
     Mesh original_mesh(mesh_folder);
-    std::vector<Mesh> sub_meshes = splitMeshVertically(original_mesh, n_splits);
     
+    std::vector<Mesh> sub_meshes = splitMeshVertically(original_mesh, n_splits);
     if (rank == 0) {
         printSimulationSetup(sub_meshes, n_splits, rank);
     }
@@ -60,7 +60,9 @@ int main(int argc, char* argv[])
     
     // 每个进程获取对应子网格
     Mesh mesh = sub_meshes[rank];
-    
+    if (rank == 0) {
+    printMatrix(mesh.zoneid,"bctype");
+    }
     // -------------------- 初始化场变量 --------------------
     mesh.u0.setZero();
     mesh.v0.setZero();
@@ -73,7 +75,7 @@ int main(int argc, char* argv[])
     mesh.p.setZero();
     mesh.p_prime.setZero();
     mesh.p_star.setZero();
-    
+   
     // -------------------- 建立方程系统 --------------------
     Equation equ_u(mesh);
     Equation equ_v(mesh);
@@ -119,26 +121,23 @@ int main(int argc, char* argv[])
         y_v.setZero();
         
         double l2_norm_x, l2_norm_y, l2_norm_p;
-        MPI_Barrier(MPI_COMM_WORLD);
         CG_parallel(equ_u, mesh, equ_u.source, x_v, tol_uv, max_iter_uv, 
-                    rank, num_procs, l2_norm_x);
-        MPI_Barrier(MPI_COMM_WORLD);            
+                    rank, num_procs, l2_norm_x,1);
+           
         CG_parallel(equ_v, mesh, equ_v.source, y_v, tol_uv, max_iter_uv, 
-                    rank, num_procs, l2_norm_y);
-        MPI_Barrier(MPI_COMM_WORLD);
+                    rank, num_procs, l2_norm_y,1);
         vectorToMatrix(x_v, mesh.u, mesh);
         vectorToMatrix(y_v, mesh.v, mesh);
-        MPI_Barrier(MPI_COMM_WORLD);
         // 交换边界数据
         exchangeColumns(mesh.u, rank, num_procs);
         exchangeColumns(mesh.v, rank, num_procs);
         exchangeColumns(equ_u.A_p, rank, num_procs);
         
-        MPI_Barrier(MPI_COMM_WORLD);
+
         
         // -------------------- 步骤2: 速度插值到面 --------------------
         face_velocity(mesh, equ_u);
-        MPI_Barrier(MPI_COMM_WORLD);
+
         
         // -------------------- 步骤3: 求解压力修正方程 --------------------
         equ_p.initializeToZero();
@@ -148,16 +147,14 @@ int main(int argc, char* argv[])
         mesh.p_prime.setZero();
         VectorXd p_v(mesh.internumber);
         p_v.setZero();
-        
-        MPI_Barrier(MPI_COMM_WORLD);
+
         CG_parallel(equ_p, mesh, equ_p.source, p_v, tol_p, max_iter_p, 
-                    rank, num_procs, l2_norm_p);
+                    rank, num_procs, l2_norm_p,1);
         
         vectorToMatrix(p_v, mesh.p_prime, mesh);
-        
-        MPI_Barrier(MPI_COMM_WORLD);
+
         exchangeColumns(mesh.p_prime, rank, num_procs); 
-        MPI_Barrier(MPI_COMM_WORLD);
+
         
         // -------------------- 步骤4: 修正压力和速度 --------------------
         correct_pressure(mesh, equ_u, alpha_p);
@@ -165,18 +162,15 @@ int main(int argc, char* argv[])
         
         // 更新压力场
         mesh.p = mesh.p_star;
-        
-   
         exchangeColumns(mesh.p, rank, num_procs);
 
-        
         // -------------------- 步骤5: 收敛性检查 --------------------
  
         // 仅rank 0打印残差信息
         if (rank == 0) {
             std::cout << std::scientific 
                       << "迭代 " << std::setw(4) << n 
-                      << " | RMSE残差 → "
+                      << " | 全局残差 → "
                       << " u: " << std::setprecision(4) << l2_norm_x
                       << " v: " << std::setprecision(4) << l2_norm_y
                       << " p: " << std::setprecision(4) << l2_norm_p
@@ -231,7 +225,7 @@ int main(int argc, char* argv[])
         if (n % 5 == 0) {
             saveMeshData(mesh, rank);
         }
-        if (n % 20 == 0) {
+        if (n % 2 == 0) {
             saveforecastData(mesh, rank, n, mu);
         }
         

@@ -8,7 +8,6 @@ Taiho 是一个基于有限体积法的并行流体力学计算流体动力学(C
 
 - **网格生成**: 支持结构化直角网格生成,可灵活设置边界条件和障碍物
 - **多种求解器**:
-  - **PISO 求解器**: 压力隐式分裂算法(Pressure-Implicit with Splitting of Operators),适用于非定常流动
   - **SIMPLE 稳态求解器**: 半隐式压力连接方程算法(Semi-Implicit Method for Pressure-Linked Equations),用于稳态问题
   - **SIMPLE 非定常求解器**: SIMPLE 算法的非定常版本
 - **并行计算**: 基于 MPI 的区域分解并行,支持垂直方向网格分割
@@ -50,8 +49,6 @@ make all
 ### 编译单个程序
 
 ```bash
-make mesh_generation        # 仅编译网格生成程序
-make solver_PISO           # 仅编译 PISO 求解器
 make solver_simple_steady   # 仅编译 SIMPLE 稳态求解器
 make solver_simple_unsteady # 仅编译 SIMPLE 非定常求解器
 ```
@@ -111,12 +108,12 @@ mesh.saveToFolder("网格文件夹名称");
 #### 命令行参数模式
 
 ```bash
-./solver_PISO <网格文件夹> <时间步长> <时间步数> <粘度> <并行进程数>
+./solver_PISO <网格文件夹> <时间步长> <时间步数> <粘度> 
 ```
 
 **示例**:
 ```bash
-mpirun -np 4 ./solver_PISO test2 0.001 1000 0.01 4
+mpirun -np 4 ./solver_PISO test2 0.001 1000 0.01 
 ```
 
 #### 交互式模式
@@ -139,12 +136,12 @@ mpirun -np 4 ./solver_PISO test2 0.001 1000 0.01 4
 #### 命令行参数模式
 
 ```bash
-./solver_simple_steady <网格文件夹> <迭代步数> <粘度> <并行进程数>
+./solver_simple_steady <网格文件夹> <迭代步数> <粘度> 
 ```
 
 **示例**:
 ```bash
-mpirun -np 4 ./solver_simple_steady test2 500 0.01 4
+mpirun -np 4 ./solver_simple_steady test2 500 0.01 
 ```
 
 #### 参数说明
@@ -154,19 +151,19 @@ mpirun -np 4 ./solver_simple_steady test2 500 0.01 4
 - **粘度**: 流体动力粘度系数
 - **并行进程数**: MPI 并行进程数
 
-**注意**: 稳态求解器不需要输入时间步长参数。
+**注意**: 稳态求解器不需要输入时间步长参数,仅。
 
 ### 4. SIMPLE 非定常求解器
 
 #### 命令行参数模式
 
 ```bash
-./solver_simple_unsteady <网格文件夹> <时间步长> <时间步数> <粘度> <并行进程数>
+./solver_simple_unsteady <网格文件夹> <时间步数> <粘度> 
 ```
 
 **示例**:
 ```bash
-mpirun -np 4 ./solver_simple_unsteady test2 0.001 1000 0.01 4
+mpirun -np 4 ./solver_simple_unsteady test2 1000 0.01 
 ```
 
 参数说明同 PISO 求解器。
@@ -180,10 +177,10 @@ mpirun -np 4 ./solver_simple_unsteady test2 0.001 1000 0.01 4
 
 # 2. 运行求解器(选择一个)
 # 非定常问题用 PISO
-mpirun -np 4 ./solver_PISO test2 0.001 1000 0.01 4
+mpirun -np 4 ./solver_PISO test2 0.001 1000 0.01 
 
 # 稳态问题用 SIMPLE
-mpirun -np 4 ./solver_simple_steady test2 500 0.01 4
+mpirun -np 4 ./solver_simple_steady test2 500 0.01 
 ```
 
 ## 并行计算说明

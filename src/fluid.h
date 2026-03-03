@@ -58,8 +58,6 @@ public:
     SparseMatrix<double> A;
     int n_x, n_y;
     Mesh& mesh;
-
-    // 只保留声明
     Equation(Mesh& mesh_);
 
     void initializeToZero();
@@ -88,7 +86,7 @@ void show_progress_bar(int current_step, int total_steps, double elapsed_time);
 
 void momentum_function(Mesh &mesh, Equation &equ_u, Equation &equ_v,double re,double alpha_uv);
 void momentum_function_unsteady(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,double dt,double alpha_uv);
-void momentum_function_PISO(Mesh &mesh, Equation &equ_u, Equation &equ_v,double mu,double dt);
+
 
 
 
@@ -122,20 +120,6 @@ void momentum_function_PISO(Mesh &mesh, Equation &equ_u, Equation &equ_v,double 
  */
 vector<Mesh> splitMeshVertically(const Mesh& original_mesh, int n);
 
-/**
- * @brief 合并子网格(去除接口交换层)
- * @param sub_meshes 子网格向量
- * @return 合并后的完整网格
- * @details
- * 合并策略:
- * 1. 识别并跳过交换层(bctype=-3的列)
- * 2. 按顺序拼接各子网格的内部和边界数据
- * 3. 重建完整的流场
- * 
- * @note 用于收集并行计算结果
- * @post 返回的网格与原始网格尺寸一致
- */
-Mesh mergeMeshesWithoutInterface(const std::vector<Mesh>& sub_meshes);
 
 /** @} */ // end of ParallelFunctions
 
