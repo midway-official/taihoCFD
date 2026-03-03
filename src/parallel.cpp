@@ -14,73 +14,35 @@ int totalcount = 0;
 void exchangeColumns(MatrixXd& matrix, int rank, int num_procs) {
     const int rows = matrix.rows();
     const int cols = matrix.cols();
+    const int count = rows * 2; // 每次交换2列
 
-    // 确定左右邻居
+    // 确定邻居
     int left_rank  = (rank == 0) ? MPI_PROC_NULL : rank - 1;
     int right_rank = (rank == num_procs - 1) ? MPI_PROC_NULL : rank + 1;
 
-    // 聚合通信：打包4列 {2,3,cols-4,cols-3}
-    const int num_cols_per_side = 2;
+    // 分配缓冲区：Eigen 默认是 ColMajor，列内数据连续
+    // 如果 matrix 是 RowMajor，建议直接使用 matrix.block(...)
+    VectorXd send_left = Map<VectorXd>(matrix.block(0, 2, rows, 2).data(), count);
+    VectorXd send_right = Map<VectorXd>(matrix.block(0, cols - 4, rows, 2).data(), count);
+    VectorXd recv_left(count), recv_right(count);
 
-    // 分配并清零缓冲区
-    vector<double> sendbuf_left(rows * num_cols_per_side, 0.0);
-    vector<double> sendbuf_right(rows * num_cols_per_side, 0.0);
-    vector<double> recvbuf_left(rows * num_cols_per_side, 0.0);
-    vector<double> recvbuf_right(rows * num_cols_per_side, 0.0);
+    // 使用 Sendrecv 一步到位，自动处理非阻塞逻辑，简洁且安全
+    // 向左发，从左收
+    MPI_Sendrecv(send_left.data(),  count, MPI_DOUBLE, left_rank,  0,
+                 recv_left.data(),  count, MPI_DOUBLE, left_rank,  1, 
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-    // 填充发送缓冲区
-    for (int i = 0; i < rows; i++) {
-        sendbuf_left[i * num_cols_per_side + 0] = matrix(i, 2);
-        sendbuf_left[i * num_cols_per_side + 1] = matrix(i, 3);
+    // 向右发，从右收
+    MPI_Sendrecv(send_right.data(), count, MPI_DOUBLE, right_rank, 1,
+                 recv_right.data(), count, MPI_DOUBLE, right_rank, 0, 
+                 MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-        sendbuf_right[i * num_cols_per_side + 0] = matrix(i, cols - 4);
-        sendbuf_right[i * num_cols_per_side + 1] = matrix(i, cols - 3);
-    }
-
+    // 写回数据
+    if (left_rank != MPI_PROC_NULL)
+        matrix.block(0, 0, rows, 2) = Map<MatrixXd>(recv_left.data(), rows, 2);
     
-    // 建立 persistent communicator topology（cartesian 拓扑）
-    MPI_Comm cart_comm;
-    int dims[1] = { num_procs };
-    int periods[1] = { 0 };
-    MPI_Cart_create(MPI_COMM_WORLD, 1, dims, periods, 0, &cart_comm);
-
-    // 定义 persistent request
-    MPI_Request requests[4];
-    MPI_Send_init(sendbuf_left.data(),  rows * num_cols_per_side, MPI_DOUBLE, left_rank,  0, MPI_COMM_WORLD, &requests[0]);
-    MPI_Recv_init(recvbuf_left.data(),  rows * num_cols_per_side, MPI_DOUBLE, left_rank,  1, MPI_COMM_WORLD, &requests[1]);
-    MPI_Send_init(sendbuf_right.data(), rows * num_cols_per_side, MPI_DOUBLE, right_rank, 1, MPI_COMM_WORLD, &requests[2]);
-    MPI_Recv_init(recvbuf_right.data(), rows * num_cols_per_side, MPI_DOUBLE, right_rank, 0, MPI_COMM_WORLD, &requests[3]);
-
-    // 启动通信
-    MPI_Startall(4, requests);
-
-    
-
-    // 等待通信完成
-    MPI_Waitall(4, requests, MPI_STATUSES_IGNORE);
-
-  
-
-    // 更新矩阵边界值
-    if (left_rank != MPI_PROC_NULL) {
-        for (int i = 0; i < rows; i++) {
-            matrix(i, 0) = recvbuf_left[i * num_cols_per_side + 0];
-            matrix(i, 1) = recvbuf_left[i * num_cols_per_side + 1];
-        }
-    }
-
-    if (right_rank != MPI_PROC_NULL) {
-        for (int i = 0; i < rows; i++) {
-            matrix(i, cols - 2) = recvbuf_right[i * num_cols_per_side + 0];
-            matrix(i, cols - 1) = recvbuf_right[i * num_cols_per_side + 1];
-        }
-    }
-
-    // 释放 persistent request 和 communicator
-    for (int i = 0; i < 4; ++i) {
-        MPI_Request_free(&requests[i]);
-    }
-    MPI_Comm_free(&cart_comm);
+    if (right_rank != MPI_PROC_NULL)
+        matrix.block(0, cols - 2, rows, 2) = Map<MatrixXd>(recv_right.data(), rows, 2);
 }
 // 从解向量转换为场矩阵
 void vectorToMatrix(const VectorXd& x, MatrixXd& phi, const Mesh& mesh) {
