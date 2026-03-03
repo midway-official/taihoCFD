@@ -518,10 +518,7 @@ void face_velocity(Mesh& mesh, Equation& equ_u) {
     double dist_e,dist_ee,dist_w,dist_ss,dist_s,dist_n;
     MatrixXd &x_c  = mesh.x_c;
     MatrixXd &y_c  = mesh.y_c;
-    MatrixXd &area_e = mesh.area_e;
-    MatrixXd &area_w = mesh.area_w;
-    MatrixXd &area_s = mesh.area_s;
-    MatrixXd &area_n = mesh.area_n;
+
     MatrixXd &vol    = mesh.vol;
 
 
@@ -751,10 +748,7 @@ void correct_velocity(Mesh &mesh, Equation &equ_u)
     double dist_e,dist_w,dist_s,dist_n;
     MatrixXd &x_c  = mesh.x_c;
     MatrixXd &y_c  = mesh.y_c;
-    MatrixXd &area_e = mesh.area_e;
-    MatrixXd &area_w = mesh.area_w;
-    MatrixXd &area_s = mesh.area_s;
-    MatrixXd &area_n = mesh.area_n;
+
     MatrixXd &vol    = mesh.vol;
     
 

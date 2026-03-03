@@ -99,12 +99,12 @@ int main(int argc, char* argv[])
         momentum_function(mesh, equ_u, equ_v, mu, alpha_uv);
 
         //解速度场
-        solveFieldPCG(equ_u, mesh, mesh.u,
+        solveFieldCG(equ_u, mesh, mesh.u,
              tol_uv, max_iter_uv,
              rank, num_procs,
              l2_norm_x,1);
 
-        solveFieldPCG(equ_v, mesh, mesh.v,
+        solveFieldCG(equ_v, mesh, mesh.v,
              tol_uv, max_iter_uv,
              rank, num_procs,
              l2_norm_y, 1);
@@ -122,7 +122,7 @@ int main(int argc, char* argv[])
         pressure_function(mesh, equ_p, equ_u);
         
         
-        solveFieldPCG(equ_p, mesh, mesh.p_prime,
+        solveFieldCG(equ_p, mesh, mesh.p_prime,
              tol_p, max_iter_p,
              rank, num_procs,
              l2_norm_p, 1);
