@@ -39,5 +39,21 @@ void solveFieldCG(
     double& l2_norm,
     int verbose
 );
+void PCG_parallel(Equation& equ, Mesh mesh,
+                 VectorXd& b, VectorXd& x,
+                 double epsilon, int max_iter,
+                 int rank, int num_procs,
+                 double& r0,int verbose=0);   
 
+void solveFieldPCG(
+    Equation& equ,
+    Mesh& mesh,
+    MatrixXd& field,
+    double tol,
+    int max_iter,
+    int rank,
+    int num_procs,
+    double& l2_norm,
+    int verbose
+);
 #endif // PARALLEL_H
