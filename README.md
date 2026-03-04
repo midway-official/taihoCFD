@@ -44,8 +44,8 @@
 │   ├── solver_simple_steady.cpp     # 定常求解器主程序
 │   └── solver_simple_unsteady.cpp   # 非定常求解器主程序
 ├── Makefile
-├── gen_cavity.py                    # 顶盖方腔网格生成脚本（示例）
-└── postprocess.py                   # 后处理与可视化脚本
+├── gen.ipynb                    # 顶盖方腔网格生成脚本（示例）
+└── plot.ipynb                   # 后处理与可视化脚本
 ```
 
 ---
@@ -86,10 +86,10 @@ solver_simple_unsteady
 
 ## 网格生成
 
-使用 `gen_cavity.py`（以顶盖驱动方腔为例）生成所需网格文件：
+使用 `gen.ipynb`（以顶盖驱动方腔为例）生成所需网格文件：
 
 ```bash
-python gen_cavity.py
+python gen.ipynb
 ```
 
 脚本会在 `ldc_exp/` 目录下生成以下文件（详见[网格文件格式](#网格文件格式)）：
@@ -243,13 +243,13 @@ python postprocess.py
 
 ```bash
 # 1. 生成 100×100 拉伸网格
-python gen_cavity.py
+python gen.ipynb
 
 # 2. 使用 4 进程定常求解，Re=100
 mpirun -np 4 ./solver_simple_steady ldc_exp 1000 0.01
 
 # 3. 后处理与可视化（4进程，输入3）
-python postprocess.py
+python plot.ipynb
 ```
 
 预期结果：中心处出现主涡，四角出现次级涡，与 Ghia et al. (1982) 基准解吻合。
