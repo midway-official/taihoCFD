@@ -257,11 +257,11 @@ python plot.ipynb
 
 ### 网格
 
-![mesh](images/mesh.png)
+![mesh](image/mesh.png)
 
 ### 速度场
 
-![velocity](images/ldc.png)
+![velocity](image/ldc.png)
 ### 流线
 
-![streamlines](images/stream.png)
+![streamlines](image/stream.png)
