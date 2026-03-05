@@ -178,7 +178,7 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
         double global_dot_p_Ap = 0.0;
         MPI_Allreduce(&local_dot_p_Ap, &global_dot_p_Ap, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         // 数学安全检查：如果分母过小，可能矩阵非正定或已陷入数值陷阱
-        if (std::abs(global_dot_p_Ap) < 1e-18) {
+        if (std::abs(global_dot_p_Ap) < 1e-35) {
             exit_status = 3;
         }
         if (exit_status == 0) {
@@ -331,7 +331,7 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
         double global_pAp = 0.0;
         MPI_Allreduce(&local_pAp, &global_pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-        if (std::abs(global_pAp) < 1e-18) { exit_status = 3; }
+        if (std::abs(global_pAp) < 1e-35) { exit_status = 3; }
 
         if (exit_status == 0) {
             double alpha = current_rz / global_pAp;  // ★ 分子用r·z

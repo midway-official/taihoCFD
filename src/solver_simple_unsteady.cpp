@@ -44,15 +44,6 @@ int main(int argc, char* argv[])
         printSimulationSetup_unsteady(sub_meshes, n_splits, dt, timesteps);
     }
     
-    // 检查进程数匹配
-    if (num_procs != n_splits) {
-        if (rank == 0) {
-            std::cerr << "错误: MPI进程数(" << num_procs 
-                      << ") 与并行线程数(" << n_splits << ")不匹配" << std::endl;
-        }
-        MPI_Finalize();
-        return 1;
-    }
     
     // 每个进程获取对应子网格
     Mesh mesh = sub_meshes[rank];
@@ -76,7 +67,7 @@ int main(int argc, char* argv[])
     Equation equ_p(mesh);
     
     // -------------------- 求解参数设置 --------------------
-    const double alpha_p = 0.1;   // 压力松弛因子
+    const double alpha_p = 0.3;   // 压力松弛因子
     const double tol_uv = 1e-5;   // 速度求解精度
     const double tol_p = 1e-5;    // 压力求解精度
     const int max_iter_uv = 25;   // 速度最大迭代次数
@@ -119,12 +110,12 @@ int main(int argc, char* argv[])
             
             
             //解速度场
-             solveFieldCG(equ_u, mesh, mesh.u,
+             solveFieldPCG(equ_u, mesh, mesh.u,
              tol_uv, max_iter_uv,
              rank, num_procs,
              l2_norm_x,1);
 
-            solveFieldCG(equ_v, mesh, mesh.v,
+            solveFieldPCG(equ_v, mesh, mesh.v,
              tol_uv, max_iter_uv,
              rank, num_procs,
              l2_norm_y, 1);
@@ -139,7 +130,7 @@ int main(int argc, char* argv[])
  
             pressure_function(mesh, equ_p, equ_u);
 
-            solveFieldCG(equ_p, mesh, mesh.p_prime,
+            solveFieldPCG(equ_p, mesh, mesh.p_prime,
              tol_p, max_iter_p,
              rank, num_procs,
              l2_norm_p, 1);
@@ -220,7 +211,7 @@ int main(int argc, char* argv[])
         
         // -------------------- 步骤6: 时间推进 --------------------
         // 保存当前时间步数据
-        saveMeshData(mesh, rank);
+        saveMeshData(mesh, rank,"result");
         
         // 更新上一时间步速度场
         mesh.u0 = mesh.u_star;
@@ -230,7 +221,7 @@ int main(int argc, char* argv[])
     }
     
     // ==================== 计算完成 ====================
-    saveMeshData(mesh, rank);
+    saveMeshData(mesh, rank,"result");
     
     auto total_elapsed_time = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - start_time).count();

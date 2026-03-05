@@ -20,19 +20,10 @@ int main(int argc, char* argv[])
     
     // -------------------- 参数设置 --------------------
     std::string mesh_folder;
-    double dt = 0.1;
     double mu;
     int timesteps, n_splits;
-    MPI_Comm_size(MPI_COMM_WORLD, &n_splits);  // 获取 MPI 总进程数
-    // 读取输入参数(仅rank 0)
-    if (rank == 0) {
-        parseInputParameters(argc, argv, mesh_folder, timesteps, mu, n_splits);
-    }
-    
-    // 广播参数到所有进程
-    broadcastParameters(mesh_folder, dt, timesteps, mu, n_splits, rank);
-    // 验证参数一致性
-    verifyParameterConsistency(mesh_folder, dt, timesteps, mu, n_splits, rank, num_procs);
+    MPI_Comm_size(MPI_COMM_WORLD, &n_splits);  // 获取 MPI 总进程数    
+    parseInputParameters(argc, argv, mesh_folder, timesteps, mu, n_splits);   
     
     // -------------------- 网格分割 --------------------
     Mesh original_mesh(mesh_folder);
@@ -42,15 +33,7 @@ int main(int argc, char* argv[])
         printSimulationSetup(sub_meshes, n_splits);
     }
     
-    // 检查进程数匹配
-    if (num_procs != n_splits) {
-        if (rank == 0) {
-            std::cerr << "错误: MPI进程数(" << num_procs 
-                      << ") 与并行线程数(" << n_splits << ")不匹配" << std::endl;
-        }
-        MPI_Finalize();
-        return 1;
-    }
+    
     
     // 每个进程获取对应子网格
     Mesh mesh = sub_meshes[rank];
@@ -73,8 +56,8 @@ int main(int argc, char* argv[])
     Equation equ_p(mesh);
     
     // -------------------- 求解参数设置 --------------------
-    const double alpha_p = 0.1;   // 压力松弛因子
-    const double alpha_uv = 0.3;  // 动量松弛因子
+    const double alpha_p = 0.3;   // 压力松弛因子
+    const double alpha_uv = 0.5;  // 动量松弛因子
     const double tol_uv = 1e-7;   // 速度求解精度
     const double tol_p = 1e-7;    // 压力求解精度
     const int max_iter_uv = 25;   // 速度最大迭代次数
@@ -99,12 +82,12 @@ int main(int argc, char* argv[])
         momentum_function(mesh, equ_u, equ_v, mu, alpha_uv);
 
         //解速度场
-        solveFieldCG(equ_u, mesh, mesh.u,
+        solveFieldPCG(equ_u, mesh, mesh.u,
              tol_uv, max_iter_uv,
              rank, num_procs,
              l2_norm_x,1);
 
-        solveFieldCG(equ_v, mesh, mesh.v,
+        solveFieldPCG(equ_v, mesh, mesh.v,
              tol_uv, max_iter_uv,
              rank, num_procs,
              l2_norm_y, 1);
@@ -122,7 +105,7 @@ int main(int argc, char* argv[])
         pressure_function(mesh, equ_p, equ_u);
         
         
-        solveFieldCG(equ_p, mesh, mesh.p_prime,
+        solveFieldPCG(equ_p, mesh, mesh.p_prime,
              tol_p, max_iter_p,
              rank, num_procs,
              l2_norm_p, 1);
@@ -148,7 +131,7 @@ int main(int argc, char* argv[])
                       << " p: " << std::setprecision(4) << l2_norm_p
                       << std::endl;
         }
-            // ==================== 时间步内停滞判断 ====================
+            // ==================== 循环步内停滞判断 ====================
             int local_stagnated = 0;
 
             if (n > 1) {
@@ -195,12 +178,12 @@ int main(int argc, char* argv[])
         
         // -------------------- 步骤6: 数据保存 --------------------
         if (n % 5 == 0) {
-            saveMeshData(mesh, rank);
+            saveMeshData(mesh, rank,"result");
         }
     }
     
     // ==================== 计算完成 ====================
-    saveMeshData(mesh, rank);
+    saveMeshData(mesh, rank,"result");
     
     auto total_elapsed_time = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - start_time).count();
