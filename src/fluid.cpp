@@ -431,8 +431,8 @@ void Equation::build_matrix() {
     std::vector<T> tripletList;
 
     // 遍历所有网格点
-    for(int i = 1; i <n_y ; i++) {
-        for(int j = 1; j < n_x; j++) {
+    for(int i = 0; i <n_y ; i++) {
+        for(int j = 0; j < n_x; j++) {
             // 只处理内部点（bctype为0的点）
             if(mesh.bctype(i,j) == 0) {
                 int current_id = mesh.interid(i,j) ;  // 当前点在方程组中的编号

@@ -102,152 +102,158 @@ for (int i = 0; i < mesh.ny ; i++) {
         }
     }
 }
-void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsilon, 
+
+void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsilon,
                  int max_iter, int rank, int num_procs, double& r0,
                  int verbose) {
-    
+
     int n = equ.A.rows();
     const SparseMatrix<double>& A = equ.A;  // 零拷贝
 
     // ===== 1. 初始化残差 r = b - Ax =====
-    VectorXd r = b - A * x; 
-
+    // 注意：exchangeColumns + Parallel_correction2 是针对并行分区边界的
+    // 幽灵列修正，必须保留，否则跨进程的 Ap 计算会有边界误差。
+    VectorXd r = b - A * x;
     MatrixXd r_field = MatrixXd::Zero(mesh.ny, mesh.nx);
     MatrixXd x_field = MatrixXd::Zero(mesh.ny, mesh.nx);
-
     vectorToMatrix(r, r_field, mesh);
     vectorToMatrix(x, x_field, mesh);
-    
     exchangeColumns(x_field, rank, num_procs);
     Parallel_correction2(mesh, equ, r_field, x_field);
     matrixToVector(r_field, r, mesh);
 
     // ===== 2. 初始化搜索方向 p = r =====
-    VectorXd p = r;
+    VectorXd p  = r;
     VectorXd Ap = VectorXd::Zero(n);
-    
-    // ===== 3. 计算全局初始状态 =====
-    double local_r_norm_sq = r.squaredNorm();
-    double local_b_norm_sq = b.squaredNorm();
-    double global_b_norm_sq = 0.0;
-    double global_r_norm_sq = 0.0;
 
-    MPI_Allreduce(&local_b_norm_sq, &global_b_norm_sq, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(&local_r_norm_sq, &global_r_norm_sq, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    // ===== 3. 计算全局初始状态（两个 Allreduce 合并为一次）=====
+    double local_buf2[2]  = { r.squaredNorm(), b.squaredNorm() };
+    double global_buf2[2] = { 0.0, 0.0 };
+    MPI_Allreduce(local_buf2, global_buf2, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-    double initial_r_norm = std::sqrt(global_r_norm_sq);
-    r0 = initial_r_norm;
-    if (rank == 0 && verbose == 1) {
-         std::cout << "  [CG] r0 "  <<   r0   << std::endl;
-    }
-    // 如果初始残差已经足够小，直接返回
-    if (initial_r_norm < 1e-15 || (initial_r_norm / std::sqrt(global_b_norm_sq + 1e-16) < epsilon)) {
-        if (rank == 0 && verbose) std::cout << "  [CG] 初始残差已达标。" << std::endl;
+    double current_r_sq   = global_buf2[0];
+    double initial_r_norm = std::sqrt(current_r_sq);  // ★ FIX2：只写一次，全程不变
+    double b_norm         = std::sqrt(global_buf2[1]);
+
+    // ★ FIX2：迭代中用 current_r_norm 追踪残差，所有进程同步持有
+    double current_r_norm = initial_r_norm;
+
+    if (rank == 0 && verbose == 1)
+        std::cout << "  [CG] r0 = " << initial_r_norm << std::endl;
+
+    if (initial_r_norm < 1e-15 ||
+        initial_r_norm / (b_norm + 1e-16) < epsilon) {
+        if (rank == 0 && verbose)
+            std::cout << "  [CG] 初始残差已达标。" << std::endl;
+        r0 = initial_r_norm;  // ★ FIX2：输出初始残差
         return;
     }
 
-    // --- 停滞检测优化变量 ---
-    double prev_r_norm = r0;
+    // 停滞检测
+    double prev_r_norm   = current_r_norm;
     int stagnation_count = 0;
-    const int max_stagnation = 3;       // 稍微增加容忍度
-    const double stagnation_tol = 1e-4; // 判定为“下降极其缓慢”的阈值
-    const int min_iter_protect = 5;    // 至少迭代10次才允许停滞退出
+    const int    max_stagnation   = 3;
+    const double stagnation_tol   = 1e-6;
+    const int    min_iter_protect = 5;
 
-    int exit_status = 0; // 0:运行, 1:收敛, 2:停滞, 3:数值失效
-    int iter = 0;
-    double current_global_r_norm_sq = global_r_norm_sq;
-    MatrixXd p_field = MatrixXd::Zero(mesh.ny, mesh.nx);
+    int exit_status = 0, iter = 0;
+    MatrixXd p_field  = MatrixXd::Zero(mesh.ny, mesh.nx);
     MatrixXd Ap_field = MatrixXd::Zero(mesh.ny, mesh.nx);
+
     // ===== 4. CG 迭代 =====
     while (iter < max_iter) {
-        p_field.setZero();    
-        Ap_field.setZero();   
-        // --- 计算 Ap ---
-        Ap = A * p; 
-        
 
-        
-        vectorToMatrix(p, p_field, mesh);
+        // ── Ap 计算 ──────────────────────────────────────────────
+        Ap = A * p;
+        vectorToMatrix(p,  p_field,  mesh);
         vectorToMatrix(Ap, Ap_field, mesh);
-        
         exchangeColumns(p_field, rank, num_procs);
         Parallel_correction(mesh, equ, Ap_field, p_field);
         matrixToVector(Ap_field, Ap, mesh);
-        // --- 计算步长 alpha ---
-        double local_dot_p_Ap = p.dot(Ap);
-        double global_dot_p_Ap = 0.0;
-        MPI_Allreduce(&local_dot_p_Ap, &global_dot_p_Ap, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        // 数学安全检查：如果分母过小，可能矩阵非正定或已陷入数值陷阱
-        if (std::abs(global_dot_p_Ap) < 1e-35) {
-            exit_status = 3;
-        }
-        if (exit_status == 0) {
-            double alpha = current_global_r_norm_sq / global_dot_p_Ap;
-            // --- 更新解和残差 ---
-            x += alpha * p;
-            r -= alpha * Ap;
-            double local_new_r_sq = r.squaredNorm();
-            double global_new_r_sq = 0.0;
-            MPI_Allreduce(&local_new_r_sq, &global_new_r_sq, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-            double current_r_norm = std::sqrt(global_new_r_sq);            
-            // --- 计算共轭方向 beta ---
-            double beta = global_new_r_sq / current_global_r_norm_sq;
-            p = r + beta * p;
-            current_global_r_norm_sq = global_new_r_sq;
-            r0 = current_r_norm;
-            iter++;
-            // ===== 5. 鲁棒性判断逻辑 (仅 Rank 0) =====
-            if (rank == 0) {
-                double rel_res = r0 / initial_r_norm;
-                
-                // A. 收敛检查
-                if (rel_res < epsilon) {
-                    exit_status = 1;
-                } 
-                // B. 停滞检查 (引入缓冲区和最小迭代保护)
-                else if (iter > min_iter_protect) {
-                    // 判断相对下降比例是否小于一个极小值
-                    if ((prev_r_norm - r0) / prev_r_norm < stagnation_tol) {
-                        stagnation_count++;
-                    } else {
-                        stagnation_count = 0;
-                    }
 
-                    if (stagnation_count >= max_stagnation) {
-                        exit_status = 2;
-                    }
-                }
-                prev_r_norm = r0;
-            }
+        // ── 检测 (p, Ap) ≈ 0 ──────────────────────────────────────
+        double local_pAp  = p.dot(Ap);
+        double global_pAp = 0.0;
+        MPI_Allreduce(&local_pAp, &global_pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+        // ★ FIX1：检测到数学失效后立即广播并退出，不再绕行
+        if (std::abs(global_pAp) < 1e-35) {
+            exit_status = 3;
+            MPI_Bcast(&exit_status, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            break;
         }
-        // 广播退出状态
+
+        // ── 更新 x, r ─────────────────────────────────────────────
+        double alpha = current_r_sq / global_pAp;
+        x += alpha * p;
+        r -= alpha * Ap;
+
+        // ── Allreduce：新 ‖r‖² ───────────────────────────────────
+        double local_new_r_sq  = r.squaredNorm();
+        double global_new_r_sq = 0.0;
+        MPI_Allreduce(&local_new_r_sq, &global_new_r_sq, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+
+        // ★ FIX2：current_r_norm 由 Allreduce 结果赋值，所有进程同步持有
+        current_r_norm = std::sqrt(global_new_r_sq);
+
+        // ── 更新 p（CG 公式）──────────────────────────────────────
+        double beta = global_new_r_sq / current_r_sq;
+        p = r + beta * p;
+        current_r_sq = global_new_r_sq;
+        iter++;
+
+        // ── 收敛 / 停滞判断（rank0 负责逻辑，结果广播）─────────────
+        // ★ FIX2：判断基于所有进程同步后的 current_r_norm，语义明确
+        if (rank == 0) {
+            double rel_res = current_r_norm / initial_r_norm;
+            if (rel_res < epsilon) {
+                exit_status = 1;
+            } else if (iter > min_iter_protect) {
+                double drop_rate = (prev_r_norm - current_r_norm) / prev_r_norm;
+                stagnation_count = (drop_rate < stagnation_tol)
+                                   ? stagnation_count + 1 : 0;
+                if (stagnation_count >= max_stagnation)
+                    exit_status = 2;
+            }
+            prev_r_norm = current_r_norm;
+        }
+
         MPI_Bcast(&exit_status, 1, MPI_INT, 0, MPI_COMM_WORLD);
         if (exit_status != 0) break;
     }
-    // ===== 6. 日志打印 =====
+
+    // ★ FIX2：函数结束时统一写回输出参数（最终残差），只写这一次
+    r0 = current_r_norm;
+
+    // ===== 5. 日志打印 =====
     if (rank == 0 && verbose == 1) {
+        double rel_res = r0 / initial_r_norm;
         if (exit_status == 1) {
-            std::cout << "  [CG] 收敛: 相对残差 " << std::scientific << std::setprecision(3) 
-                      << r0 / initial_r_norm << " (" << iter << " iterations)" << std::endl;
+            std::cout << "  [CG] 收敛: 相对残差 " << std::scientific
+                      << std::setprecision(3) << rel_res
+                      << " (" << iter << " iterations)" << std::endl;
         } else if (exit_status == 2) {
-            std::cout << "  [CG] 停滞退出: 连续 " << max_stagnation << " 步下降率低于 " 
-                      << stagnation_tol << " (Final Rel.Res: " << r0/initial_r_norm << ")"<< " (" << iter << " iterations)" << std::endl;
+            std::cout << "  [CG] 停滞退出: 连续 " << max_stagnation
+                      << " 步下降率低于 " << stagnation_tol
+                      << " (Final Rel.Res: " << rel_res << ")"
+                      << " (" << iter << " iterations)" << std::endl;
         } else if (exit_status == 3) {
             std::cout << "  [CG] 错误: 数学失效 (p,Ap) ≈ 0" << std::endl;
         } else {
-            std::cout << "  [CG] 达到最大迭代次数. Rel.Res: " << r0/initial_r_norm << " (" << iter << " iterations)" << std::endl;
+            std::cout << "  [CG] 达到最大迭代次数. Rel.Res: " << rel_res
+                      << " (" << iter << " iterations)" << std::endl;
         }
     }
 }
 
-void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, 
+void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
                  double epsilon, int max_iter, int rank, int num_procs,
                  double& r0, int verbose) {
-    
-    int n = equ.A.rows();
-    const SparseMatrix<double>& A = equ.A;  // 零拷贝
 
-    // ★ 1. 构建Jacobi预条件（仅一次，O(N)，无通信）
+    int n = equ.A.rows();
+    const SparseMatrix<double>& A = equ.A;
+
+    // 构建Jacobi预条件（仅一次，O(N)，无通信）
     VectorXd inv_diag(n);
     for (int i = 0; i < mesh.ny; i++) {
         for (int j = 0; j < mesh.nx; j++) {
@@ -259,7 +265,9 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
         }
     }
 
-    // ===== 初始化残差（与原来完全相同）=====
+    // ===== 初始化残差 =====
+    // 注意：exchangeColumns + Parallel_correction2 是针对并行分区边界的
+    // 幽灵列修正，必须保留，否则跨进程的 Ap 计算会有边界误差。
     VectorXd r = b - A * x;
     MatrixXd r_field = MatrixXd::Zero(mesh.ny, mesh.nx);
     MatrixXd x_field = MatrixXd::Zero(mesh.ny, mesh.nx);
@@ -269,127 +277,129 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
     Parallel_correction2(mesh, equ, r_field, x_field);
     matrixToVector(r_field, r, mesh);
 
-    // ★ 2. 初始化：p = z = M⁻¹r，而非 p = r
-    VectorXd z = inv_diag.cwiseProduct(r);   // 本地操作，无通信
-    VectorXd p = z;
+    // 初始化：p = z = M⁻¹r
+    VectorXd z  = inv_diag.cwiseProduct(r);
+    VectorXd p  = z;
     VectorXd Ap = VectorXd::Zero(n);
 
-    // ★ 3. 初始内积改为 r·z（PCG用r·z，CG用r·r）
-    double local_rz       = r.dot(z);
-    double local_r_norm_sq = r.squaredNorm();
-    double local_b_norm_sq = b.squaredNorm();
-
-    double global_rz = 0.0, global_r_norm_sq = 0.0, global_b_norm_sq = 0.0;
-
-    // ★ 三个Allreduce合并为一次（减少同步开销）
-    double local_buf3[3]  = {local_rz, local_r_norm_sq, local_b_norm_sq};
-    double global_buf3[3] = {0, 0, 0};
+    // 初始内积（三个Allreduce合并为一次）
+    double local_buf3[3]  = { r.dot(z), r.squaredNorm(), b.squaredNorm() };
+    double global_buf3[3] = { 0.0, 0.0, 0.0 };
     MPI_Allreduce(local_buf3, global_buf3, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    global_rz        = global_buf3[0];
-    global_r_norm_sq = global_buf3[1];
-    global_b_norm_sq = global_buf3[2];
 
-    double initial_r_norm = std::sqrt(global_r_norm_sq);
-    r0 = initial_r_norm;
+    double current_rz    = global_buf3[0];
+    double initial_r_norm = std::sqrt(global_buf3[1]);   // 只写这一次，不再修改
+    double b_norm         = std::sqrt(global_buf3[2]);
+
+    // ★ FIX2：r0 仅作输出，记录初始残差；迭代过程用独立变量 current_r_norm
+    double current_r_norm = initial_r_norm;  // 所有进程均持有，随迭代同步更新
 
     if (rank == 0 && verbose == 1)
-        std::cout << "  [PCG] r0 " << r0 << std::endl;
+        std::cout << "  [PCG] r0 = " << initial_r_norm << std::endl;
 
-    if (initial_r_norm < 1e-15 || 
-        initial_r_norm / std::sqrt(global_b_norm_sq + 1e-16) < epsilon) {
-        if (rank == 0 && verbose) 
+    if (initial_r_norm < 1e-15 ||
+        initial_r_norm / (b_norm + 1e-16) < epsilon) {
+        if (rank == 0 && verbose)
             std::cout << "  [PCG] 初始残差已达标。" << std::endl;
+        r0 = initial_r_norm;   // ★ FIX2：输出初始残差
         return;
     }
 
-    // 停滞检测（与原来相同）
-    double prev_r_norm = r0;
-    int stagnation_count = 0;
-    const int max_stagnation = 3;
-    const double stagnation_tol = 1e-4;
-    const int min_iter_protect = 5;
+    // 停滞检测
+    double prev_r_norm    = current_r_norm;
+    int stagnation_count  = 0;
+    const int    max_stagnation  = 3;
+    const double stagnation_tol  = 1e-6;
+    const int    min_iter_protect = 5;
     int exit_status = 0, iter = 0;
 
-    double current_rz = global_rz;  // ★ 保存当前 r·z（替代原来的 r·r）
     MatrixXd p_field  = MatrixXd::Zero(mesh.ny, mesh.nx);
     MatrixXd Ap_field = MatrixXd::Zero(mesh.ny, mesh.nx);
+
     // ===== PCG 迭代 =====
     while (iter < max_iter) {
-        p_field.setZero();    
-        Ap_field.setZero();  
-        // Ap计算（与原来完全相同）
-        Ap = A * p;
 
+        // ── Ap 计算 ──────────────────────────────────────────────
+        Ap = A * p;
         vectorToMatrix(p,  p_field,  mesh);
         vectorToMatrix(Ap, Ap_field, mesh);
         exchangeColumns(p_field, rank, num_procs);
         Parallel_correction(mesh, equ, Ap_field, p_field);
         matrixToVector(Ap_field, Ap, mesh);
 
-        // ★ alpha分母是 p·Ap，分子是 r·z（不是r·r）
+        // ── 检测 (p, Ap) ≈ 0 ──────────────────────────────────────
         double local_pAp = p.dot(Ap);
         double global_pAp = 0.0;
         MPI_Allreduce(&local_pAp, &global_pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-        if (std::abs(global_pAp) < 1e-35) { exit_status = 3; }
+        // ★ FIX1：检测到数学失效后立即广播并退出，不再绕行
+        if (std::abs(global_pAp) < 1e-35) {
+            exit_status = 3;
+            MPI_Bcast(&exit_status, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            break;
+        }
 
-        if (exit_status == 0) {
-            double alpha = current_rz / global_pAp;  // ★ 分子用r·z
+        // ── 更新 x, r, z ──────────────────────────────────────────
+        double alpha = current_rz / global_pAp;
+        x += alpha * p;
+        r -= alpha * Ap;
+        z  = inv_diag.cwiseProduct(r);   // 本地操作，无通信
 
-            x += alpha * p;
-            r -= alpha * Ap;
+        // ── 合并 Allreduce：新 r·z 和 ‖r‖² ──────────────────────
+        double local_buf2[2]  = { r.dot(z), r.squaredNorm() };
+        double global_buf2[2] = { 0.0, 0.0 };
+        MPI_Allreduce(local_buf2, global_buf2, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-            // ★ 每轮更新z（本地操作，无通信！）
-            z = inv_diag.cwiseProduct(r);
+        double new_rz = global_buf2[0];
+        // ★ FIX2：current_r_norm 由所有进程同步更新，rank0 不再独享
+        current_r_norm = std::sqrt(global_buf2[1]);
 
-            // ★ 合并两个Allreduce：同时算新的r·z和‖r‖²
-            double local_buf2[2]  = { r.dot(z), r.squaredNorm() };
-            double global_buf2[2] = { 0.0, 0.0 };
-            MPI_Allreduce(local_buf2, global_buf2, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        // ── 更新 p（PCG 公式）─────────────────────────────────────
+        double beta = new_rz / current_rz;
+        p = z + beta * p;
+        current_rz = new_rz;
+        iter++;
 
-            double new_rz      = global_buf2[0];
-            double new_r_norm  = std::sqrt(global_buf2[1]);
-
-            // ★ beta用新旧r·z之比（PCG公式）
-            double beta = new_rz / current_rz;
-            p = z + beta * p;   // ★ 用z更新p，不用r
-
-            current_rz = new_rz;
-            r0 = new_r_norm;
-            iter++;
-
-            // 收敛/停滞判断（与原来相同）
-            if (rank == 0) {
-                double rel_res = r0 / initial_r_norm;
-                if (rel_res < epsilon) {
-                    exit_status = 1;
-                } else if (iter > min_iter_protect) {
-                    if ((prev_r_norm - r0) / prev_r_norm < stagnation_tol)
-                        stagnation_count++;
-                    else
-                        stagnation_count = 0;
-                    if (stagnation_count >= max_stagnation) exit_status = 2;
-                }
-                prev_r_norm = r0;
+        // ── 收敛 / 停滞判断（rank0 负责逻辑，结果广播）─────────────
+        // ★ FIX2：判断基于所有进程同步后的 current_r_norm，语义明确
+        if (rank == 0) {
+            double rel_res = current_r_norm / initial_r_norm;
+            if (rel_res < epsilon) {
+                exit_status = 1;
+            } else if (iter > min_iter_protect) {
+                double drop_rate = (prev_r_norm - current_r_norm) / prev_r_norm;
+                stagnation_count = (drop_rate < stagnation_tol)
+                                   ? stagnation_count + 1 : 0;
+                if (stagnation_count >= max_stagnation)
+                    exit_status = 2;
             }
+            prev_r_norm = current_r_norm;
         }
 
         MPI_Bcast(&exit_status, 1, MPI_INT, 0, MPI_COMM_WORLD);
         if (exit_status != 0) break;
     }
 
-    // ===== 6. 日志打印 =====
+    // ★ FIX2：函数结束时统一写回输出参数，语义清晰（最终残差）
+    r0 = current_r_norm;
+
+    // ===== 日志打印 =====
     if (rank == 0 && verbose == 1) {
+        double rel_res = r0 / initial_r_norm;
         if (exit_status == 1) {
-            std::cout << "  [PCG] 收敛: 相对残差 " << std::scientific << std::setprecision(3) 
-                      << r0 / initial_r_norm << " (" << iter << " iterations)" << std::endl;
+            std::cout << "  [PCG] 收敛: 相对残差 " << std::scientific
+                      << std::setprecision(3) << rel_res
+                      << " (" << iter << " iterations)" << std::endl;
         } else if (exit_status == 2) {
-            std::cout << "  [PCG] 停滞退出: 连续 " << max_stagnation << " 步下降率低于 " 
-                      << stagnation_tol << " (Final Rel.Res: " << r0/initial_r_norm << ")"<< " (" << iter << " iterations)" << std::endl;
+            std::cout << "  [PCG] 停滞退出: 连续 " << max_stagnation
+                      << " 步下降率低于 " << stagnation_tol
+                      << " (Final Rel.Res: " << rel_res << ")"
+                      << " (" << iter << " iterations)" << std::endl;
         } else if (exit_status == 3) {
             std::cout << "  [PCG] 错误: 数学失效 (p,Ap) ≈ 0" << std::endl;
         } else {
-            std::cout << "  [PCG] 达到最大迭代次数. Rel.Res: " << r0/initial_r_norm << " (" << iter << " iterations)" << std::endl;
+            std::cout << "  [PCG] 达到最大迭代次数. Rel.Res: " << rel_res
+                      << " (" << iter << " iterations)" << std::endl;
         }
     }
 }
