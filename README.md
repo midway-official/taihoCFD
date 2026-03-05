@@ -253,3 +253,15 @@ python plot.ipynb
 ```
 
 预期结果：中心处出现主涡，四角出现次级涡，与 Ghia et al. (1982) 基准解吻合。
+## 示例：顶盖驱动方腔流
+
+### 网格
+
+![mesh](images/mesh.png)
+
+### 速度场
+
+![velocity](images/ldc.png)
+### 流线
+
+![streamlines](images/stream.png)
