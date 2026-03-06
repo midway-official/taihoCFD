@@ -21,12 +21,11 @@ void exchangeColumns(MatrixXd& matrix, int rank, int num_procs) {
     int right_rank = (rank == num_procs - 1) ? MPI_PROC_NULL : rank + 1;
 
     // 分配缓冲区：Eigen 默认是 ColMajor，列内数据连续
-    // 如果 matrix 是 RowMajor，建议直接使用 matrix.block(...)
     VectorXd send_left = Map<VectorXd>(matrix.block(0, 2, rows, 2).data(), count);
     VectorXd send_right = Map<VectorXd>(matrix.block(0, cols - 4, rows, 2).data(), count);
     VectorXd recv_left(count), recv_right(count);
 
-    // 使用 Sendrecv 一步到位，自动处理非阻塞逻辑，简洁且安全
+    // 使用 Sendrecv 
     // 向左发，从左收
     MPI_Sendrecv(send_left.data(),  count, MPI_DOUBLE, left_rank,  0,
                  recv_left.data(),  count, MPI_DOUBLE, left_rank,  1, 
@@ -112,7 +111,7 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
 
     // ===== 1. 初始化残差 r = b - Ax =====
     // 注意：exchangeColumns + Parallel_correction2 是针对并行分区边界的
-    // 幽灵列修正，必须保留，否则跨进程的 Ap 计算会有边界误差。
+    // GHOST CELL列修正，必须保留，否则跨进程的 Ap 计算会有边界误差。
     VectorXd r = b - A * x;
     MatrixXd r_field = MatrixXd::Zero(mesh.ny, mesh.nx);
     MatrixXd x_field = MatrixXd::Zero(mesh.ny, mesh.nx);
@@ -132,10 +131,10 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
     MPI_Allreduce(local_buf2, global_buf2, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
     double current_r_sq   = global_buf2[0];
-    double initial_r_norm = std::sqrt(current_r_sq);  // ★ FIX2：只写一次，全程不变
+    double initial_r_norm = std::sqrt(current_r_sq);  // 只写一次，全程不变
     double b_norm         = std::sqrt(global_buf2[1]);
 
-    // ★ FIX2：迭代中用 current_r_norm 追踪残差，所有进程同步持有
+    // 迭代中用 current_r_norm 追踪残差，所有进程同步持有
     double current_r_norm = initial_r_norm;
 
     if (rank == 0 && verbose == 1)
@@ -176,7 +175,7 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
         double global_pAp = 0.0;
         MPI_Allreduce(&local_pAp, &global_pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-        // ★ FIX1：检测到数学失效后立即广播并退出，不再绕行
+        // 检测到数学失效后立即广播并退出，不再绕行
         if (std::abs(global_pAp) < 1e-35) {
             exit_status = 3;
             MPI_Bcast(&exit_status, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -193,7 +192,7 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
         double global_new_r_sq = 0.0;
         MPI_Allreduce(&local_new_r_sq, &global_new_r_sq, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-        // ★ FIX2：current_r_norm 由 Allreduce 结果赋值，所有进程同步持有
+        // current_r_norm 由 Allreduce 结果赋值，所有进程同步持有
         current_r_norm = std::sqrt(global_new_r_sq);
 
         // ── 更新 p（CG 公式）──────────────────────────────────────
@@ -203,7 +202,7 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
         iter++;
 
         // ── 收敛 / 停滞判断（rank0 负责逻辑，结果广播）─────────────
-        // ★ FIX2：判断基于所有进程同步后的 current_r_norm，语义明确
+        //判断基于所有进程同步后的 current_r_norm，语义明确
         if (rank == 0) {
             double rel_res = current_r_norm / initial_r_norm;
             if (rel_res < epsilon) {
@@ -222,7 +221,7 @@ void CG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x, double epsi
         if (exit_status != 0) break;
     }
 
-    // ★ FIX2：函数结束时统一写回输出参数（最终残差），只写这一次
+    //函数结束时统一写回输出参数（最终残差），只写这一次
     r0 = current_r_norm;
 
     // ===== 5. 日志打印 =====
@@ -267,7 +266,7 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
 
     // ===== 初始化残差 =====
     // 注意：exchangeColumns + Parallel_correction2 是针对并行分区边界的
-    // 幽灵列修正，必须保留，否则跨进程的 Ap 计算会有边界误差。
+    // GHOST CELL列修正，必须保留，否则跨进程的 Ap 计算会有边界误差。
     VectorXd r = b - A * x;
     MatrixXd r_field = MatrixXd::Zero(mesh.ny, mesh.nx);
     MatrixXd x_field = MatrixXd::Zero(mesh.ny, mesh.nx);
@@ -332,7 +331,7 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
         double global_pAp = 0.0;
         MPI_Allreduce(&local_pAp, &global_pAp, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
-        // ★ FIX1：检测到数学失效后立即广播并退出，不再绕行
+        // 检测到数学失效后立即广播并退出，不再绕行
         if (std::abs(global_pAp) < 1e-35) {
             exit_status = 3;
             MPI_Bcast(&exit_status, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -351,7 +350,7 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
         MPI_Allreduce(local_buf2, global_buf2, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 
         double new_rz = global_buf2[0];
-        // ★ FIX2：current_r_norm 由所有进程同步更新，rank0 不再独享
+        //current_r_norm 由所有进程同步更新，rank0 不再独享
         current_r_norm = std::sqrt(global_buf2[1]);
 
         // ── 更新 p（PCG 公式）─────────────────────────────────────
@@ -361,7 +360,7 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
         iter++;
 
         // ── 收敛 / 停滞判断（rank0 负责逻辑，结果广播）─────────────
-        // ★ FIX2：判断基于所有进程同步后的 current_r_norm，语义明确
+        //判断基于所有进程同步后的 current_r_norm，语义明确
         if (rank == 0) {
             double rel_res = current_r_norm / initial_r_norm;
             if (rel_res < epsilon) {
@@ -380,7 +379,7 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
         if (exit_status != 0) break;
     }
 
-    // ★ FIX2：函数结束时统一写回输出参数，语义清晰（最终残差）
+    // 函数结束时统一写回输出参数，语义清晰（最终残差）
     r0 = current_r_norm;
 
     // ===== 日志打印 =====

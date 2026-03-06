@@ -30,8 +30,8 @@
  * @note 所有求解器函数均通过 MPI_Allreduce 同步全局残差，
  *       收敛判断由 rank 0 执行后广播，确保所有进程同步退出。
  *
- * @author  用户
- * @version 1.0
+ * @author  midway
+ * @version 2.0
  */
 
 #ifndef PARALLEL_H
