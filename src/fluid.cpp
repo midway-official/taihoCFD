@@ -135,7 +135,7 @@ void Mesh::setBlock(int x1, int y1, int x2, int y2, double bcValue, double zoneV
     bctype.block(y1, x1, y2-y1+1, x2-x1+1).setConstant(bcValue);
     zoneid.block(y1, x1, y2-y1+1, x2-x1+1).setConstant(zoneValue);
 }
-void Mesh::setZoneUV(size_t zoneIndex, double u, double v) {
+void Mesh::setZoneUV(size_t zoneIndex, double u_val, double v_val) {
     // 确保 zoneu 和 zonev 向量足够长
     while(zoneu.size() <= zoneIndex) {
         zoneu.push_back(0.0);
@@ -143,8 +143,8 @@ void Mesh::setZoneUV(size_t zoneIndex, double u, double v) {
     }
     
     // 设置指定索引的值
-    zoneu[zoneIndex] = u;
-    zonev[zoneIndex] = v;
+    zoneu[zoneIndex] = u_val;
+    zonev[zoneIndex] = v_val;
 }
 void Mesh::initializeBoundaryConditions() 
 {
@@ -309,10 +309,10 @@ Mesh::Mesh(const std::string& folderPath) {
     if (!zoneuvFile) {
         throw std::runtime_error("无法打开区域速度文件!");
     }
-    double u, v;
-    while(zoneuvFile >> u >> v) {
-        zoneu.push_back(u);
-        zonev.push_back(v);
+    double u_tmp, v_tmp;
+    while(zoneuvFile >> u_tmp >> v_tmp) {
+        zoneu.push_back(u_tmp);
+        zonev.push_back(v_tmp);
     }
     zoneuvFile.close();
 

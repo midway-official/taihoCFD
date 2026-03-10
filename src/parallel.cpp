@@ -290,7 +290,7 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
     double initial_r_norm = std::sqrt(global_buf3[1]);   // 只写这一次，不再修改
     double b_norm         = std::sqrt(global_buf3[2]);
 
-    // ★ FIX2：r0 仅作输出，记录初始残差；迭代过程用独立变量 current_r_norm
+    // r0 仅作输出，记录初始残差；迭代过程用独立变量 current_r_norm
     double current_r_norm = initial_r_norm;  // 所有进程均持有，随迭代同步更新
 
     if (rank == 0 && verbose == 1)
@@ -300,7 +300,7 @@ void PCG_parallel(Equation& equ, Mesh mesh, VectorXd& b, VectorXd& x,
         initial_r_norm / (b_norm + 1e-16) < epsilon) {
         if (rank == 0 && verbose)
             std::cout << "  [PCG] 初始残差已达标。" << std::endl;
-        r0 = initial_r_norm;   // ★ FIX2：输出初始残差
+        r0 = initial_r_norm;   // 输出初始残差
         return;
     }
 

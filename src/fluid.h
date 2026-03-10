@@ -190,7 +190,7 @@ public:
      * @param u  该区域的 x 方向速度
      * @param v  该区域的 y 方向速度
      */
-    void setZoneUV(size_t zoneIndex, double u, double v);
+    void setZoneUV(size_t zoneIndex, double u_val, double v_val);
 
     // ── 调试输出 ──────────────────────────────────────────────────────────
 

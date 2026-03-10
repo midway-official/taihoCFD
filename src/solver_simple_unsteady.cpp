@@ -70,9 +70,9 @@ int main(int argc, char* argv[])
     const double alpha_p = 0.3;   // 压力松弛因子
     const double tol_uv = 1e-5;   // 速度求解精度
     const double tol_p = 1e-5;    // 压力求解精度
-    const int max_iter_uv = 25;   // 速度最大迭代次数
-    const int max_iter_p = 140;   // 压力最大迭代次数
-    const int max_simple_iter = 10;  // 每个时间步SIMPLE最大迭代次数
+    const int max_iter_uv = 10;   // 速度最大迭代次数
+    const int max_iter_p = 200;   // 压力最大迭代次数
+    const int max_simple_iter = 20;  // 每个时间步SIMPLE最大迭代次数
     const double stagnation_tol = 1e-3;   // 0.1% 停滞阈值
     double l2_norm_x, l2_norm_y, l2_norm_p;
     

@@ -58,11 +58,11 @@ int main(int argc, char* argv[])
     // -------------------- 求解参数设置 --------------------
     const double alpha_p = 0.3;   // 压力松弛因子
     const double alpha_uv = 0.5;  // 动量松弛因子
-    const double tol_uv = 1e-7;   // 速度求解精度
-    const double tol_p = 1e-7;    // 压力求解精度
-    const int max_iter_uv = 25;   // 速度最大迭代次数
+    const double tol_uv = 1e-5;   // 速度求解精度
+    const double tol_p = 1e-5;    // 压力求解精度
+    const int max_iter_uv = 10;   // 速度最大迭代次数
     const int max_iter_p = 200;   // 压力最大迭代次数
-    const double stagnation_tol = 1e-4;   // 0.01% 停滞阈值
+    const double stagnation_tol = 1e-3;   // 0.1% 停滞阈值
 
     double l2_norm_x, l2_norm_y, l2_norm_p;
     double prev_l2_u = -1.0;
