@@ -43,6 +43,248 @@ Backward Euler 非定常计算，并针对结构化正交网格进行验证。
 编译生成的 `build/`、`report/`、求解器可执行文件和运行结果不属于源代码，
 由 `.gitignore` 排除；运行结果建议放在单独的 case 目录中。
 
+## 核心对象与数据结构
+
+下面的说明以 `src/mesh/`、`src/numerics/` 和 `src/solvers/` 中的实际 C++
+类型为准。求解器没有把每个单元封装成一个 C++ 对象，而是采用“规则网格上的
+Eigen 矩阵 + interior 单元压缩向量”的数据布局：几何和场量保留二维索引，
+线性系统只对真正参与求解的 interior 单元编号。这样既便于有限体积离散，
+也避免把物理边界和 MPI ghost 单元错误地放进线性系统。
+
+### 1. 索引、尺寸和存储约定
+
+所有矩阵使用 Eigen 的 `(行, 列)` 索引 `(i, j)`：`i` 沿 y 方向，`j` 沿 x
+方向。对全局网格而言，`i=0` 是底部 `y=0`，`i=ny-1` 是顶部 `y=Ly`；
+`j=0` 是左侧，`j=nx-1` 是右侧。一个局部 MPI 网格的 `nx` 包括 ghost 列，
+而不是全局真实列数。
+
+| 数据 | Eigen 尺寸 | 说明 |
+|---|---:|---|
+| 单元中心场 `u,v,p` 及其系数矩阵 | `ny × nx` | cell-centered 数据；包含物理边界和 MPI ghost 列 |
+| 节点坐标 `x,y` | `(ny+1) × (nx+1)` | 网格顶点坐标 |
+| 单元中心坐标 `x_c,y_c` | `ny × nx` | 四个顶点的平均值 |
+| 面面积 `area_e/w/n/s`、体积 `vol` | `ny × nx` | 轴对齐网格上的几何度量 |
+| x 法向面速度 `u_face` | `ny × (nx-1)` | 相邻 x 单元之间的面速度 |
+| y 法向面速度 `v_face` | `(ny-1) × nx` | 相邻 y 单元之间的面速度 |
+| `interi/interj` | 长度 `internumber` | 第 k 个 interior 方程对应的二维 `(i,j)` |
+| `interid` | `ny × nx` 整数矩阵 | interior 单元到压缩方程编号的反向映射；非 interior 为 `-1` |
+
+`ny` 和 `nx` 是当前 `Mesh` 对象的局部尺寸。串行时
+`owned_j_begin=0, owned_j_end=nx`；MPI 分解后，真实列区间为
+`[owned_j_begin, owned_j_end)`，左、右最多各有两列 ghost。代码约定右端点
+是开区间，因此 owned 列数始终为 `owned_j_end-owned_j_begin`。
+
+### 2. `Mesh`：所有场、几何和拓扑的所有者
+
+`src/mesh/mesh.h` 中的 `Mesh` 是求解器的核心状态容器。它自身不负责求解
+线性方程，而是向离散算子、边界模型和 `SimpleSolver` 提供统一的数据视图。
+
+```text
+Mesh
+├── 速度场
+│   ├── u, v          当前线性方程求得的速度预测量
+│   ├── u_star,v_star 压力修正后的速度（用于下一次 SIMPLE 迭代/输出）
+│   └── u0, v0       非定常时间项使用的上一时间层速度
+├── 压力和面通量
+│   ├── p             当前压力
+│   ├── p_star        压力修正前的暂存量
+│   ├── p_prime       压力修正方程的未知量
+│   └── u_face,v_face Rhie–Chow 面速度
+├── 几何
+│   ├── x,y           节点坐标
+│   ├── x_c,y_c       单元中心坐标
+│   ├── area_e/w/n/s  四个面的长度/面积
+│   └── vol           单元体积（二维中为面积）
+├── 拓扑和边界
+│   ├── cell_kind     Interior、PhysicalBoundary 或 Processor
+│   ├── patch_id      单元所属 BoundaryPatch 的索引，未绑定时为 -1
+│   ├── interid       二维单元到压缩编号的映射
+│   └── boundary_patches 结构化边界条件列表
+└── 尺寸与 MPI
+    ├── nx,ny         当前局部矩阵尺寸
+    ├── internumber   interior 单元数
+    └── owned_j_begin/end 真实列范围
+```
+
+其中 `u/v` 和 `u_star/v_star` 要区分：动量方程先以当前 `u_star/v_star`
+为初值装配并求得 `u/v` 预测量，压力修正和速度修正随后更新 `u_star/v_star`。
+`u0/v0` 只在非定常计算中跨时间步保存；稳态计算通过
+`TimeTerm::none()` 禁用它们的时间项。`p_prime` 是每轮 SIMPLE 的压力修正，
+不是要直接输出的绝对压力；`p` 才是物理压力场。
+
+网格构造流程为：分配矩阵 → `initializeToZero()` 初始化场和拓扑默认值 →
+`initGeometry()` 计算中心、面面积和体积 → `createInterId()` 只给
+`CellKind::Interior` 单元连续编号。`validate()` 会检查尺寸、坐标单调性、
+有限且为正的体积，以及要求开启时的物理外边界完整性。
+
+### 3. `CellKind`、`BoundaryPatch` 和字段边界条件
+
+`CellKind` 描述单元在离散拓扑中的角色，而 `BoundaryPatch` 描述边界的物理
+条件，两者有意分离：Processor 单元是 MPI 通信拓扑，不是物理边界；一个物理
+patch 可以包含多个边界单元。
+
+```cpp
+enum class CellKind { Interior, PhysicalBoundary, Processor };
+enum class PatchKind { Generic, Wall };
+enum class BoundaryConditionType {
+    FixedValue, ZeroGradient, InletOutlet, NoSlip
+};
+
+struct BoundaryPatch {
+    std::string name;
+    PatchKind kind;
+    VectorBoundaryCondition velocity;
+    ScalarBoundaryCondition pressure;
+    std::vector<CellIndex> cells;  // 该 patch 的所有单元坐标
+};
+```
+
+`VectorBoundaryCondition` 保存速度类型、固定值和入口值；
+`ScalarBoundaryCondition` 保存压力对应的标量值。当前 legacy reader 将
+`bctype.dat` 转换成这些类型：wall 为速度固定/压力零梯度，velocity inlet
+为速度固定/压力零梯度，pressure outlet 为速度零梯度/压力固定。转换后，
+离散代码通过 `patch_id` 和 `BoundaryPatch` 查询条件，不再在主循环中直接
+比较 `0、-1、-2、-3` 等旧整数编码。
+
+### 4. `Equation`：二维系数矩阵和压缩稀疏矩阵
+
+`src/numerics/equation.h` 的 `Equation` 不拥有独立的网格副本，而是保存一个
+`Mesh& mesh` 引用，并在该网格上维护一个五点有限体积方程：
+
+```text
+Equation
+├── A_p, A_e, A_w, A_n, A_s : ny × nx 的面/中心系数
+├── source                  : 长度 internumber 的 interior 源项
+├── A                       : internumber × internumber 的 Eigen 稀疏矩阵
+└── mesh&                   : 关联的 Mesh
+```
+
+对一个 interior 单元 P，离散形式约定为：
+
+```text
+A_p(P) φ_P - A_e(P) φ_E - A_w(P) φ_W
+       - A_n(P) φ_N - A_s(P) φ_S = source(P)
+```
+
+`A_*` 保留二维位置，便于按面装配、松弛和 Rhie–Chow 使用；
+`buildMatrix()` 再根据 `interid` 把它们压缩成稀疏矩阵 `A`。只有邻居也是
+interior 时才写入 `-A_e/-A_w/-A_n/-A_s` 非对角项；物理边界的 Dirichlet
+贡献已经在装配阶段并入对角项和 `source`，Processor 邻居则先通过 halo
+交换取得系数/场值。`reset()` 清零本轮系数和源项，但不改变网格拓扑。
+
+### 5. 离散策略与 `TimeTerm`
+
+`NumericalSchemes` 是无状态的离散策略集合，当前字段为：
+
+```text
+time                  : SteadyState 或 BackwardEuler
+velocity_convection   : Upwind
+pressure_gradient     : Central
+velocity_laplacian    : Orthogonal
+face_interpolation    : Linear
+```
+
+定常和非定常不再维护两套主循环或两套动量装配，而是通过
+`TimeTerm` 注入时间项：
+
+```cpp
+struct TimeTerm {
+    double dt;
+    const Eigen::MatrixXd* u_previous;
+    const Eigen::MatrixXd* v_previous;
+};
+```
+
+`TimeTerm::none()` 表示无时间项；`TimeTerm::backwardEuler(dt, u0, v0)`
+使动量方程增加 `V/dt` 到 `A_p`，并增加
+`V*u0/dt`、`V*v0/dt` 到源项。两个指针是非 owning 指针，只在一次迭代期间
+借用调用者的矩阵，因此 `u0/v0` 必须在 `solveIteration()` 返回前保持有效。
+
+### 6. 线性求解和 SIMPLE 控制对象
+
+`SolutionConfig` 将线性求解器参数与外层 SIMPLE 收敛参数分开：
+
+```text
+SolutionConfig
+├── velocity : LinearSolverConfig
+│   └── BiCGSTAB + ILUT（默认）
+├── pressure : LinearSolverConfig
+│   └── PCG + IncompleteCholesky（默认）
+└── simple   : SimpleControl
+    ├── max_iterations
+    ├── non_orthogonal_correctors
+    ├── pressure_relaxation
+    ├── velocity_relaxation
+    └── residual { continuity, velocity_change }
+```
+
+`LinearSolverConfig` 还包含绝对/相对容差、最大线性迭代次数和
+`warm_start`。`LinearSolverResult` 记录 `status`、迭代次数、初始残差、最终
+残差和相对残差；状态可以是 `Converged`、`MaxIterations` 或 `Breakdown`。
+当前 `non_orthogonal_correctors` 字段已预留接口，但正交网格版本使用 0，
+尚未执行额外的非正交修正循环。
+
+### 7. `SimpleSolver` 的引用关系和一次迭代
+
+`SimpleSolver` 持有 `Mesh&`，并在构造时创建两个都指向该网格的 `Equation`：
+
+```text
+SimpleSolver
+├── mesh_&
+├── momentum_ : Equation(mesh_)
+├── pressure_ : Equation(mesh_)
+├── source_v_ : v 方程压缩源项
+├── previous_u_/previous_v_ : 预测速度压缩向量
+└── schemes_/solution_ : 离散和求解控制的值对象
+```
+
+`solveIteration(const TimeTerm&)` 的数据流固定为：
+
+```text
+u_star/v_star
+    │
+    ├─ 动量装配（ddt、对流、扩散、梯度、松弛）
+    ├─ u/v 线性求解 ──┐
+    └─ Rhie–Chow 面速度 │
+                       ▼
+                 压力修正方程
+                       │
+                 p_prime 线性求解
+                       │
+          p、u_star、v_star 修正
+                       │
+                连续性和变化量检查
+```
+
+返回值 `SimpleIterationResult` 同时携带 u、v、pressure 三个
+`LinearSolverResult`，以及 `ContinuityMetrics`、相对速度变化、相对压力修正、
+`healthy` 和 `converged` 标志。`converged` 只有在线性子问题没有失败、连续性
+残差和速度变化都满足 `SimpleControl` 容差时才为真；这使调用者无需解析日志
+来判断一轮 SIMPLE 是否真正收敛。
+
+### 8. MPI 局部网格、压缩向量和结果写出
+
+MPI 运行时先读取一个全局 `Mesh`，再由 `extractLocalMesh()` 沿 x 方向切分：
+
+```text
+global Mesh
+    └─ extractLocalMesh(rank, num_procs, ghost_layers=2)
+          └─ local Mesh (owned columns + Processor ghost columns)
+                ├─ createInterId()
+                ├─ matrixToVector()/vectorToMatrix()
+                └─ exchangeColumns(field/coefficient)
+```
+
+`matrixToVector()` 按 `interi/interj` 顺序只提取 interior 单元，供 Eigen 稀疏
+线性系统使用；`vectorToMatrix()` 将求解结果写回对应二维位置。每轮需要邻域
+数据时，`exchangeColumns()` 用 `MPI_Sendrecv` 交换两层列；串行运行时为空操作。
+因此 `Equation::A` 的行数永远是本地 `internumber`，不会包含 Processor ghost
+单元或已经被边界条件消元的单元。
+
+`saveMeshData()` 写出 `u_star、v_star、p、x_c、y_c`，并默认只写
+`[owned_j_begin, owned_j_end)` 区间。后处理脚本再按 rank 拼回全局场；ghost
+列从不写入结果文件，所以不同 MPI 规模的结果不能直接混合拼接。
+
 ## 依赖和编译
 
 需要：
