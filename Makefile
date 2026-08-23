@@ -3,11 +3,17 @@
 # ==========================================================
 
 MPICXX   := mpic++
-CXX_STD  := -std=c++17
+CXX_STD  := -std=c++17 -DOMPI_SKIP_MPICXX=1 -DMPICH_SKIP_MPICXX=1
 
-# 基础优化
-OPT_FLAGS := -O3 -march=native -mtune=native -funroll-loops -ffast-math \
+# 基础优化。默认保留 IEEE NaN/Inf 语义，避免数值异常被 -ffast-math 隐藏。
+OPT_FLAGS := -O3 -march=native -mtune=native -funroll-loops \
              -fomit-frame-pointer -fprefetch-loop-arrays
+
+# 仅在用户明确接受非 IEEE 浮点语义时启用：make FAST_MATH=1
+FAST_MATH ?= 0
+ifeq ($(FAST_MATH),1)
+OPT_FLAGS += -ffast-math
+endif
 
 # 警告
 WARN_FLAGS := -Wall -Wextra -Wpedantic -Wshadow \
@@ -24,6 +30,7 @@ INCLUDES := -Isrc
 SRC_DIR    := src
 BUILD_DIR  := build
 REPORT_DIR := report
+PGO_DIR    := $(REPORT_DIR)/pgo
 
 # ==========================================================
 # 目标程序
@@ -31,16 +38,33 @@ REPORT_DIR := report
 
 SOLVERS := solver_simple_steady solver_simple_unsteady
 TARGETS := $(SOLVERS)
+TEST_TARGET := pressure_matrix_test
+MOMENTUM_TEST_TARGET := momentum_time_term_test
 
 # ==========================================================
 # 源文件
 # ==========================================================
 
-COMMON_SRCS  := $(SRC_DIR)/fluid.cpp \
-                $(SRC_DIR)/parallel.cpp
+COMMON_SRCS  := $(SRC_DIR)/mesh/mesh.cpp \
+                $(SRC_DIR)/mesh/geometry.cpp \
+                $(SRC_DIR)/mesh/boundary.cpp \
+                $(SRC_DIR)/numerics/equation.cpp \
+                $(SRC_DIR)/numerics/stencil.cpp \
+                $(SRC_DIR)/numerics/momentum.cpp \
+                $(SRC_DIR)/numerics/rhie_chow.cpp \
+                $(SRC_DIR)/numerics/pressure_correction.cpp \
+                $(SRC_DIR)/numerics/continuity.cpp \
+                $(SRC_DIR)/parallel/domain_decomposition.cpp \
+                $(SRC_DIR)/parallel/halo_exchange.cpp \
+                $(SRC_DIR)/solvers/linear_solver.cpp \
+                $(SRC_DIR)/solvers/simple_solver.cpp \
+                $(SRC_DIR)/io/mesh_reader.cpp \
+                $(SRC_DIR)/io/result_writer.cpp \
+                $(SRC_DIR)/apps/app_common.cpp \
+                $(SRC_DIR)/apps/application.cpp
 
-STEADY_SRC   := $(SRC_DIR)/solver_simple_steady.cpp
-UNSTEADY_SRC := $(SRC_DIR)/solver_simple_unsteady.cpp
+STEADY_SRC   := $(SRC_DIR)/apps/steady_main.cpp
+UNSTEADY_SRC := $(SRC_DIR)/apps/unsteady_main.cpp
 
 ALL_SRCS := $(COMMON_SRCS) $(STEADY_SRC) $(UNSTEADY_SRC)
 
@@ -49,13 +73,16 @@ ALL_SRCS := $(COMMON_SRCS) $(STEADY_SRC) $(UNSTEADY_SRC)
 # ==========================================================
 
 COMMON_OBJS  := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(COMMON_SRCS))
-STEADY_OBJ   := $(BUILD_DIR)/solver_simple_steady.o
-UNSTEADY_OBJ := $(BUILD_DIR)/solver_simple_unsteady.o
+STEADY_OBJ   := $(BUILD_DIR)/apps/steady_main.o
+UNSTEADY_OBJ := $(BUILD_DIR)/apps/unsteady_main.o
+PRESSURE_TEST_OBJ := $(BUILD_DIR)/pressure_matrix_test.o
+MOMENTUM_TEST_OBJ := $(BUILD_DIR)/momentum_time_term_test.o
 
 ALL_OBJS := $(COMMON_OBJS) $(STEADY_OBJ) $(UNSTEADY_OBJ)
 
 # 依赖文件
-DEPS := $(ALL_OBJS:.o=.d)
+DEPS := $(ALL_OBJS:.o=.d) $(PRESSURE_TEST_OBJ:.o=.d) \
+        $(MOMENTUM_TEST_OBJ:.o=.d)
 
 # ==========================================================
 # 颜色输出
@@ -93,6 +120,34 @@ solver_simple_unsteady: $(COMMON_OBJS) $(UNSTEADY_OBJ)
 	@$(MPICXX) $(CXXFLAGS) $^ -o $@
 	$(LOGC) "OK" "solver_simple_unsteady 链接成功"
 
+$(TEST_TARGET): $(COMMON_OBJS) $(PRESSURE_TEST_OBJ)
+	$(LOG) "LINK" "$@"
+	@$(MPICXX) $(CXXFLAGS) $^ -o $@
+
+$(MOMENTUM_TEST_TARGET): $(COMMON_OBJS) $(MOMENTUM_TEST_OBJ)
+	$(LOG) "LINK" "$@"
+	@$(MPICXX) $(CXXFLAGS) $^ -o $@
+
+$(PRESSURE_TEST_OBJ): tests/pressure_matrix_test.cpp | $(BUILD_DIR) $(REPORT_DIR)
+	$(LOG) "CXX" "$<"
+	@$(MPICXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
+
+$(MOMENTUM_TEST_OBJ): tests/momentum_time_term_test.cpp | $(BUILD_DIR) $(REPORT_DIR)
+	$(LOG) "CXX" "$<"
+	@$(MPICXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
+
+test-pressure: $(TEST_TARGET)
+	@mpirun -np 1 ./$(TEST_TARGET) poiseuille
+	@mpirun -np 1 ./$(TEST_TARGET) ldc_uni
+	$(LOGC) "TEST" "压力出口与闭域参考压力测试通过"
+
+test-momentum: $(MOMENTUM_TEST_TARGET)
+	@mpirun -np 1 ./$(MOMENTUM_TEST_TARGET) poiseuille
+	$(LOGC) "TEST" "定常/非定常动量装配测试通过"
+
+test: test-pressure test-momentum
+	$(LOGC) "TEST" "全部数值装配测试通过"
+
 # ==========================================================
 # 创建目录
 # ==========================================================
@@ -109,6 +164,7 @@ $(REPORT_DIR):
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp | $(BUILD_DIR) $(REPORT_DIR)
 	$(LOG) "CXX" "$<"
+	@mkdir -p $(dir $@)
 	@$(MPICXX) $(CXXFLAGS) $(INCLUDES) \
 	    -MMD -MP \
 	    -fopt-info-vec-optimized-missed=$(REPORT_DIR)/$(*F)_vec.log \
@@ -195,21 +251,23 @@ report-all: report-flags report-vec report-simd report-size
 # PGO（Profile-Guided Optimization）
 # ==========================================================
 
-pgo-generate: CXXFLAGS += -fprofile-generate=$(BUILD_DIR)/pgo
-pgo-generate: clean all
+pgo-generate:
+	@$(MAKE) clean
+	@$(MAKE) CXXFLAGS="$(CXXFLAGS) -fprofile-generate=$(PGO_DIR)" all
 	$(LOG) "PGO" "插桩编译完成，请运行程序以收集 profile"
 
-pgo-use: CXXFLAGS += -fprofile-use=$(BUILD_DIR)/pgo -fprofile-correction
-pgo-use: all
+pgo-use:
+	@$(MAKE) clean
+	@$(MAKE) CXXFLAGS="$(CXXFLAGS) -fprofile-use=$(PGO_DIR) -fprofile-correction" all
 	$(LOG) "PGO" "$(COLOR_GREEN)PGO 优化编译完成$(COLOR_RESET)"
 
 # ==========================================================
 # Debug 构建
 # ==========================================================
 
-debug: CXXFLAGS := $(CXX_STD) -O0 -g3 -Wall -Wextra -DDEBUG \
-                   -fsanitize=address,undefined
-debug: clean all
+debug:
+	@$(MAKE) clean
+	@$(MAKE) CXXFLAGS="$(CXX_STD) -O0 -g3 -Wall -Wextra -DDEBUG -fsanitize=address,undefined" all
 	$(LOG) "DEBUG" "Debug 构建完成（含 ASan + UBSan）"
 
 # ==========================================================
@@ -218,7 +276,7 @@ debug: clean all
 
 clean:
 	$(LOG) "CLEAN" "清理构建产物"
-	@rm -rf $(BUILD_DIR) $(TARGETS)
+	@rm -rf $(BUILD_DIR) $(TARGETS) $(TEST_TARGET) $(MOMENTUM_TEST_TARGET)
 
 clean-report:
 	$(LOG) "CLEAN" "清理报告"
@@ -238,6 +296,9 @@ help:
 	@echo "$(COLOR_BOLD)构建目标:$(COLOR_RESET)"
 	@echo "  all              默认构建所有程序"
 	@echo "  debug            Debug 构建（ASan + UBSan）"
+	@echo "  test             运行全部数值装配测试"
+	@echo "  test-pressure    验证压力出口对角项与闭域参考压力"
+	@echo "  test-momentum    验证共享动量装配的时间项"
 	@echo "  pgo-generate     PGO 第一步：插桩编译"
 	@echo "  pgo-use          PGO 第二步：优化编译"
 	@echo ""
@@ -263,7 +324,7 @@ help:
 .PHONY: all clean clean-report distclean debug help \
         report-vec report-asm report-pp report-simd \
         report-size report-flags report-all \
-        pgo-generate pgo-use
+        pgo-generate pgo-use test-pressure
 
 # ==========================================================
 # 自动依赖

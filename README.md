@@ -26,9 +26,9 @@
 - **定常 / 非定常**：分别对应 `solver_simple_steady` 和 `solver_simple_unsteady`
 - **MPI 并行**：沿 x 方向域分解，ghost 层自动交换
 - **结构化四边形网格**：支持非均匀拉伸网格，几何量（面积、体积）自动计算
-- **并行线性求解器**：CG（共轭梯度）和 PCG（预条件共轭梯度，Jacobi 预条件）
+- **匹配矩阵性质的线性求解器**：非对称动量方程使用 BiCGSTAB+ILUT，压力修正使用 PCG+不完全 Cholesky
 - **多种边界条件**：无滑移壁面、速度入口、压力出口、并行接口层
-- **自动收敛检测**：残差收敛 + 停滞退出双重机制
+- **物理收敛检测**：同时检查全局质量不平衡和速度场相对变化
 
 ---
 
@@ -37,12 +37,12 @@
 ```
 .
 ├── src/
-│   ├── fluid.h                      # 核心数据结构与函数声明
-│   ├── fluid.cpp                    # Mesh / Equation 类实现，SIMPLE 各步骤函数
-│   ├── parallel.h                   # 并行函数声明
-│   ├── parallel.cpp                 # MPI 列交换、并行 CG/PCG 求解器
-│   ├── solver_simple_steady.cpp     # 定常求解器主程序
-│   └── solver_simple_unsteady.cpp   # 非定常求解器主程序
+│   ├── mesh/                        # 网格容器、几何量和边界条件
+│   ├── numerics/                    # 动量、Rhie-Chow、压力修正和连续性
+│   ├── solvers/                     # SIMPLE、BiCGSTAB 和 PCG
+│   ├── parallel/                    # 域分解与 halo 交换
+│   ├── io/                          # 网格读取与结果输出
+│   └── apps/                        # 共用运行循环及两个轻量入口
 ├── Makefile
 ├── gen.ipynb                    # 顶盖方腔网格生成脚本（示例）
 └── plot.ipynb                   # 后处理与可视化脚本
@@ -130,8 +130,6 @@ mpirun -np <进程数> ./solver_simple_steady <网格文件夹> <迭代步数> <
 # 示例：4 进程，最多 500 步，Re=100（mu=0.01）
 mpirun -np 4 ./solver_simple_steady ldc_exp 500 0.01
 
-# 交互式输入（不带参数运行）
-mpirun -np 4 ./solver_simple_steady
 ```
 
 ### 非定常求解器
@@ -150,12 +148,11 @@ mpirun -np 4 ./solver_simple_unsteady ldc_exp 0.01 200 0.01
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `alpha_p` | 0.1 | 压力松弛因子 |
-| `alpha_uv` | 0.3 | 动量松弛因子（仅定常） |
-| `tol_uv` | 1e-7 / 1e-5 | 速度方程求解精度 |
-| `tol_p` | 1e-7 / 1e-5 | 压力修正方程求解精度 |
-| `max_iter_uv` | 25 | 速度 CG 最大迭代次数 |
-| `max_iter_p` | 200 | 压力 CG 最大迭代次数 |
+| `pressure_relaxation` | 0.3 | 压力松弛因子 |
+| `velocity_relaxation` | 0.5（稳态）/ 0.7（非稳态） | 动量松弛因子 |
+| `linear_tolerance` | 1e-7 | 线性方程归一化残差容差 |
+| `momentum_max_iterations` | 200 | 动量 BiCGSTAB 最大迭代次数 |
+| `pressure_max_iterations` | 1000 | 压力 PCG 最大迭代次数 |
 
 ---
 
@@ -167,7 +164,7 @@ mpirun -np 4 ./solver_simple_unsteady ldc_exp 0.01 200 0.01
 |----|------|------|
 | `0` | 内部点 | 参与方程求解 |
 | `> 0`（如 `1`） | 无滑移壁面 | 速度由 `zoneuv.txt` 指定 |
-| `-1` | 压力出口 | 给定压强（零表压） |
+| `-1` | 压力出口 | 给定零表压；压力修正采用 `p'=0`，边界系数加入对角项 |
 | `-2` | 速度入口 | 给定速度，由 `zoneuv.txt` 指定 |
 | `-3` | MPI 并行接口 | 程序自动生成，用户无需设置 |
 
@@ -207,6 +204,8 @@ xc_<rank>.dat   # 单元中心 x 坐标
 yc_<rank>.dat   # 单元中心 y 坐标
 ```
 
+每个文件只包含该 rank 拥有的真实列，不包含 ghost 列；按 rank 从小到大沿列拼接即可恢复全局场。
+
 运行后处理脚本将各进程结果拼接并可视化：
 
 ```bash
@@ -232,10 +231,18 @@ python postprocess.py
 3. 构建压力修正方程  →  求解 p'
 4. 修正压力  p = p* + α_p · p'
 5. 修正速度  u* ← u* + f(p')
-6. 收敛判断（残差 + 停滞检测）
+6. 收敛判断（全局质量不平衡 + 速度场相对变化）
 ```
 
-并行策略采用沿 x 方向的**域分解**，相邻子域间各设置 2 层 ghost 单元（`bctype=-3`），通过 `MPI_Sendrecv` 进行边界数据交换，通信在每次 CG 迭代中进行 Ap 修正。
+有定压出口时，压力修正采用固定值 `p'=0` 并将边界系数加入方程对角项；没有定压出口的闭域只设置一个参考压力单元。并行策略采用沿 x 方向的**域分解**，相邻子域间各设置 2 层 ghost 单元（`bctype=-3`），通过 `MPI_Sendrecv` 交换连续列缓冲区。
+
+稳态和非稳态共用同一个 SIMPLE 循环。稳态传入 `TimeTerm::none()`；非稳态传入包含 `dt/u_previous/v_previous` 的后向欧拉时间项。四个方向的动量边界统一由同一个面贡献函数组装。
+
+数值装配回归测试可通过 `make test` 执行：压力测试覆盖压力出口
+Dirichlet 对角项和闭域单参考压力；动量测试验证时间项只增加
+`V/dt` 对角项与历史速度源项，不改变空间离散系数。
+
+可运行 `make test-pressure` 回归检查定压出口对角项、闭域参考压力、压力矩阵对称性和 PCG 收敛。
 
 ---
 
