@@ -26,9 +26,10 @@ int main(int argc, char* argv[]) {
     Equation momentum(mesh);
     Equation pressure(mesh);
     Eigen::VectorXd source_v(mesh.internumber);
+    const NumericalSchemes schemes = NumericalSchemes::steady();
     assembleMomentum(
-        mesh, momentum, source_v, 0.01, 0.5, TimeTerm::none());
-    interpolateFaceVelocity(mesh, momentum);
+        mesh, momentum, source_v, 0.01, 0.5, TimeTerm::none(), schemes);
+    interpolateFaceVelocity(mesh, momentum, schemes.face_interpolation);
     assemblePressureCorrection(mesh, pressure, momentum, 0, 1);
 
     Eigen::SparseMatrix<double> transpose = pressure.A.transpose();
@@ -40,19 +41,19 @@ int main(int argc, char* argv[]) {
         const int i = mesh.interi[static_cast<std::size_t>(n)];
         const int j = mesh.interj[static_cast<std::size_t>(n)];
         const double neighbours =
-            (isCoupledCell(mesh.bctype(i, j + 1)) ? pressure.A_e(i, j) : 0.0) +
-            (isCoupledCell(mesh.bctype(i, j - 1)) ? pressure.A_w(i, j) : 0.0) +
-            (isCoupledCell(mesh.bctype(i - 1, j)) ? pressure.A_n(i, j) : 0.0) +
-            (isCoupledCell(mesh.bctype(i + 1, j)) ? pressure.A_s(i, j) : 0.0);
+            (isCoupledCell(mesh, i, j + 1) ? pressure.A_e(i, j) : 0.0) +
+            (isCoupledCell(mesh, i, j - 1) ? pressure.A_w(i, j) : 0.0) +
+            (isCoupledCell(mesh, i - 1, j) ? pressure.A_n(i, j) : 0.0) +
+            (isCoupledCell(mesh, i + 1, j) ? pressure.A_s(i, j) : 0.0);
         minimum_margin = std::min(
             minimum_margin, pressure.A_p(i, j) - neighbours);
         if (pressure.A_p(i, j) - neighbours > 1e-14) {
             ++strict_rows;
         }
-        if (isPressureOutlet(mesh.bctype(i, j - 1)) ||
-            isPressureOutlet(mesh.bctype(i, j + 1)) ||
-            isPressureOutlet(mesh.bctype(i - 1, j)) ||
-            isPressureOutlet(mesh.bctype(i + 1, j))) {
+        if (isFixedPressureBoundaryCell(mesh, i, j - 1) ||
+            isFixedPressureBoundaryCell(mesh, i, j + 1) ||
+            isFixedPressureBoundaryCell(mesh, i - 1, j) ||
+            isFixedPressureBoundaryCell(mesh, i + 1, j)) {
             ++outlet_rows;
             if (!(pressure.A_p(i, j) > neighbours)) {
                 std::cerr << "fixed-pressure coefficient missing from diagonal\n";
@@ -74,9 +75,10 @@ int main(int argc, char* argv[]) {
         std::max(pressure.source.norm(), 1e-30);
 
     Eigen::MatrixXd field = Eigen::MatrixXd::Zero(mesh.ny, mesh.nx);
-    const LinearSolverResult result = solveFieldPCG(
-        pressure, pressure.source, mesh, field,
-        1e-7, 1000, 0, 1, false);
+    LinearSolverConfig pressure_solver = SolutionConfig{}.pressure;
+    pressure_solver.max_iterations = 1000;
+    const LinearSolverResult result = solveField(
+        pressure, pressure.source, mesh, field, pressure_solver, 0, 1);
 
     std::cout << "symmetry=" << symmetry_error
               << " min_diagonal_margin=" << minimum_margin

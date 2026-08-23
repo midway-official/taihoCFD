@@ -38,7 +38,7 @@ void Equation::buildMatrix() {
                 {i + 1, j, A_s(i, j)},
             }};
             for (const auto& [ni, nj, coefficient] : neighbours) {
-                if (isInterior(mesh.bctype(ni, nj))) {
+                if (isInteriorCell(mesh, ni, nj)) {
                     add(n, mesh.interid(ni, nj), -coefficient);
                 }
             }

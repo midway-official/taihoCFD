@@ -38,28 +38,29 @@ void Mesh::validate(bool require_physical_outer_boundary) const {
     if (owned_j_begin < 0 || owned_j_end > nx || owned_j_begin >= owned_j_end) {
         throw std::runtime_error("非法 owned 列范围");
     }
-    if (zoneu.empty() || zoneu.size() != zonev.size()) {
-        throw std::runtime_error("边界速度表无效");
-    }
-
+    validateBoundaryModel(*this);
     for (int j = 0; j < nx; ++j) {
         for (int i = 0; i < ny; ++i) {
-            const int type = bctype(i, j);
-            const bool known_type =
-                isInterior(type) || isMpiGhost(type) || isWall(type) ||
-                isPressureOutlet(type) || isVelocityInlet(type);
-            if (!known_type) {
-                throw std::runtime_error("网格包含未知边界类型");
+            const int kind = cell_kind(i, j);
+            const bool known_kind =
+                kind == static_cast<int>(CellKind::Interior) ||
+                kind == static_cast<int>(CellKind::PhysicalBoundary) ||
+                kind == static_cast<int>(CellKind::Processor);
+            if (!known_kind) {
+                throw std::runtime_error("网格包含未知 CellKind");
             }
-            if (isInterior(type)) {
+            if (isInteriorCell(*this, i, j)) {
                 if (i == 0 || i == ny - 1 || j == 0 || j == nx - 1) {
                     throw std::runtime_error("内部单元位于数组外边界，邻居模板将越界");
                 }
-            } else if (!isMpiGhost(type)) {
-                const int zone = zoneid(i, j);
-                if (zone < 0 || static_cast<std::size_t>(zone) >= zoneu.size()) {
-                    throw std::runtime_error("物理边界 zoneid 超出 zoneuv 范围");
+            } else if (isPhysicalBoundaryCell(*this, i, j)) {
+                const int patch = patch_id(i, j);
+                if (patch < 0 ||
+                    static_cast<std::size_t>(patch) >= boundary_patches.size()) {
+                    throw std::runtime_error("物理边界 patchId 无效");
                 }
+            } else if (patch_id(i, j) != -1) {
+                throw std::runtime_error("processor 单元不能绑定物理 patch");
             }
 
             if (!std::isfinite(x_c(i, j)) || !std::isfinite(y_c(i, j)) ||
@@ -77,12 +78,14 @@ void Mesh::validate(bool require_physical_outer_boundary) const {
 
     if (require_physical_outer_boundary) {
         for (int j = 0; j < nx; ++j) {
-            if (isInterior(bctype(0, j)) || isInterior(bctype(ny - 1, j))) {
+            if (isInteriorCell(*this, 0, j) ||
+                isInteriorCell(*this, ny - 1, j)) {
                 throw std::runtime_error("顶/底外边界必须显式标记边界类型");
             }
         }
         for (int i = 0; i < ny; ++i) {
-            if (isInterior(bctype(i, 0)) || isInterior(bctype(i, nx - 1))) {
+            if (isInteriorCell(*this, i, 0) ||
+                isInteriorCell(*this, i, nx - 1)) {
                 throw std::runtime_error("左/右外边界必须显式标记边界类型");
             }
         }

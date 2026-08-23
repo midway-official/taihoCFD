@@ -1,6 +1,5 @@
 #include "mesh/mesh.h"
 
-#include <algorithm>
 #include <stdexcept>
 
 namespace {
@@ -34,8 +33,8 @@ void resizeMeshStorage(Mesh& mesh, int ny, int nx) {
     mesh.u_face.resize(ny, nx - 1);
     mesh.v_face.resize(ny - 1, nx);
 
-    mesh.bctype.resize(ny, nx);
-    mesh.zoneid.resize(ny, nx);
+    mesh.cell_kind.resize(ny, nx);
+    mesh.patch_id.resize(ny, nx);
     mesh.interid.resize(ny, nx);
     mesh.initializeToZero();
 }
@@ -70,12 +69,13 @@ void Mesh::initializeToZero() {
     p_prime.setZero();
     u_face.setZero();
     v_face.setZero();
-    bctype.setZero();
-    zoneid.setZero();
+    cell_kind.setConstant(static_cast<int>(CellKind::Interior));
+    patch_id.setConstant(-1);
     interid.setConstant(-1);
     internumber = 0;
     interi.clear();
     interj.clear();
+    boundary_patches.clear();
 }
 
 void Mesh::createInterId() {
@@ -88,42 +88,11 @@ void Mesh::createInterId() {
 
     for (int j = 0; j < nx; ++j) {
         for (int i = 0; i < ny; ++i) {
-            if (isInterior(bctype(i, j))) {
+            if (isInteriorCell(*this, i, j)) {
                 interid(i, j) = internumber++;
                 interi.push_back(i);
                 interj.push_back(j);
             }
         }
     }
-}
-
-void Mesh::setBlock(
-    int x1,
-    int y1,
-    int x2,
-    int y2,
-    int bc_value,
-    int zone_value)
-{
-    x1 = std::clamp(x1, 0, nx - 1);
-    x2 = std::clamp(x2, 0, nx - 1);
-    y1 = std::clamp(y1, 0, ny - 1);
-    y2 = std::clamp(y2, 0, ny - 1);
-    if (x1 > x2) {
-        std::swap(x1, x2);
-    }
-    if (y1 > y2) {
-        std::swap(y1, y2);
-    }
-    bctype.block(y1, x1, y2 - y1 + 1, x2 - x1 + 1).setConstant(bc_value);
-    zoneid.block(y1, x1, y2 - y1 + 1, x2 - x1 + 1).setConstant(zone_value);
-}
-
-void Mesh::setZoneUV(std::size_t zone_index, double u_value, double v_value) {
-    if (zoneu.size() <= zone_index) {
-        zoneu.resize(zone_index + 1, 0.0);
-        zonev.resize(zone_index + 1, 0.0);
-    }
-    zoneu[zone_index] = u_value;
-    zonev[zone_index] = v_value;
 }

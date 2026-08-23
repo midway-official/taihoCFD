@@ -40,6 +40,7 @@ SOLVERS := solver_simple_steady solver_simple_unsteady
 TARGETS := $(SOLVERS)
 TEST_TARGET := pressure_matrix_test
 MOMENTUM_TEST_TARGET := momentum_time_term_test
+BOUNDARY_TEST_TARGET := boundary_model_test
 
 # ==========================================================
 # 源文件
@@ -49,13 +50,17 @@ COMMON_SRCS  := $(SRC_DIR)/mesh/mesh.cpp \
                 $(SRC_DIR)/mesh/geometry.cpp \
                 $(SRC_DIR)/mesh/boundary.cpp \
                 $(SRC_DIR)/numerics/equation.cpp \
+                $(SRC_DIR)/numerics/schemes.cpp \
+                $(SRC_DIR)/numerics/time_term.cpp \
                 $(SRC_DIR)/numerics/stencil.cpp \
+                $(SRC_DIR)/numerics/operators.cpp \
                 $(SRC_DIR)/numerics/momentum.cpp \
                 $(SRC_DIR)/numerics/rhie_chow.cpp \
                 $(SRC_DIR)/numerics/pressure_correction.cpp \
                 $(SRC_DIR)/numerics/continuity.cpp \
                 $(SRC_DIR)/parallel/domain_decomposition.cpp \
                 $(SRC_DIR)/parallel/halo_exchange.cpp \
+                $(SRC_DIR)/solvers/solution_config.cpp \
                 $(SRC_DIR)/solvers/linear_solver.cpp \
                 $(SRC_DIR)/solvers/simple_solver.cpp \
                 $(SRC_DIR)/io/mesh_reader.cpp \
@@ -77,12 +82,13 @@ STEADY_OBJ   := $(BUILD_DIR)/apps/steady_main.o
 UNSTEADY_OBJ := $(BUILD_DIR)/apps/unsteady_main.o
 PRESSURE_TEST_OBJ := $(BUILD_DIR)/pressure_matrix_test.o
 MOMENTUM_TEST_OBJ := $(BUILD_DIR)/momentum_time_term_test.o
+BOUNDARY_TEST_OBJ := $(BUILD_DIR)/boundary_model_test.o
 
 ALL_OBJS := $(COMMON_OBJS) $(STEADY_OBJ) $(UNSTEADY_OBJ)
 
 # 依赖文件
 DEPS := $(ALL_OBJS:.o=.d) $(PRESSURE_TEST_OBJ:.o=.d) \
-        $(MOMENTUM_TEST_OBJ:.o=.d)
+        $(MOMENTUM_TEST_OBJ:.o=.d) $(BOUNDARY_TEST_OBJ:.o=.d)
 
 # ==========================================================
 # 颜色输出
@@ -128,11 +134,19 @@ $(MOMENTUM_TEST_TARGET): $(COMMON_OBJS) $(MOMENTUM_TEST_OBJ)
 	$(LOG) "LINK" "$@"
 	@$(MPICXX) $(CXXFLAGS) $^ -o $@
 
+$(BOUNDARY_TEST_TARGET): $(COMMON_OBJS) $(BOUNDARY_TEST_OBJ)
+	$(LOG) "LINK" "$@"
+	@$(MPICXX) $(CXXFLAGS) $^ -o $@
+
 $(PRESSURE_TEST_OBJ): tests/pressure_matrix_test.cpp | $(BUILD_DIR) $(REPORT_DIR)
 	$(LOG) "CXX" "$<"
 	@$(MPICXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
 
 $(MOMENTUM_TEST_OBJ): tests/momentum_time_term_test.cpp | $(BUILD_DIR) $(REPORT_DIR)
+	$(LOG) "CXX" "$<"
+	@$(MPICXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
+
+$(BOUNDARY_TEST_OBJ): tests/boundary_model_test.cpp | $(BUILD_DIR) $(REPORT_DIR)
 	$(LOG) "CXX" "$<"
 	@$(MPICXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
 
@@ -145,7 +159,12 @@ test-momentum: $(MOMENTUM_TEST_TARGET)
 	@mpirun -np 1 ./$(MOMENTUM_TEST_TARGET) poiseuille
 	$(LOGC) "TEST" "定常/非定常动量装配测试通过"
 
-test: test-pressure test-momentum
+test-boundary: $(BOUNDARY_TEST_TARGET)
+	@mpirun -np 2 ./$(BOUNDARY_TEST_TARGET) poiseuille open
+	@mpirun -np 2 ./$(BOUNDARY_TEST_TARGET) ldc_uni closed
+	$(LOGC) "TEST" "patch 与字段边界条件转换测试通过"
+
+test: test-pressure test-momentum test-boundary
 	$(LOGC) "TEST" "全部数值装配测试通过"
 
 # ==========================================================
@@ -276,7 +295,8 @@ debug:
 
 clean:
 	$(LOG) "CLEAN" "清理构建产物"
-	@rm -rf $(BUILD_DIR) $(TARGETS) $(TEST_TARGET) $(MOMENTUM_TEST_TARGET)
+	@rm -rf $(BUILD_DIR) $(TARGETS) $(TEST_TARGET) $(MOMENTUM_TEST_TARGET) \
+	    $(BOUNDARY_TEST_TARGET)
 
 clean-report:
 	$(LOG) "CLEAN" "清理报告"
@@ -299,6 +319,7 @@ help:
 	@echo "  test             运行全部数值装配测试"
 	@echo "  test-pressure    验证压力出口对角项与闭域参考压力"
 	@echo "  test-momentum    验证共享动量装配的时间项"
+	@echo "  test-boundary    验证 patch、字段边界条件和 MPI 拓扑"
 	@echo "  pgo-generate     PGO 第一步：插桩编译"
 	@echo "  pgo-use          PGO 第二步：优化编译"
 	@echo ""

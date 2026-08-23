@@ -13,7 +13,6 @@
 namespace {
 
 constexpr double breakdown_tolerance = 1e-30;
-constexpr double absolute_residual_tolerance = 1e-14;
 
 double globalDot(const Eigen::VectorXd& left, const Eigen::VectorXd& right) {
     const double local = left.dot(right);
@@ -48,10 +47,10 @@ public:
         for (int n = 0; n < mesh_.internumber; ++n) {
             const int i = mesh_.interi[static_cast<std::size_t>(n)];
             const int j = mesh_.interj[static_cast<std::size_t>(n)];
-            if (isMpiGhost(mesh_.bctype(i, j + 1))) {
+            if (isProcessorCell(mesh_, i, j + 1)) {
                 output[n] -= equation_.A_e(i, j) * exchange_field_(i, j + 1);
             }
-            if (isMpiGhost(mesh_.bctype(i, j - 1))) {
+            if (isProcessorCell(mesh_, i, j - 1)) {
                 output[n] -= equation_.A_w(i, j) * exchange_field_(i, j - 1);
             }
         }
@@ -73,7 +72,7 @@ LinearSolverResult finalResult(
     LinearSolverStatus status,
     int iterations,
     double initial_residual,
-    double tolerance,
+    const LinearSolverConfig& config,
     const Eigen::VectorXd& right_hand_side,
     const Eigen::VectorXd& solution,
     DistributedOperator& distributed_operator)
@@ -84,7 +83,7 @@ LinearSolverResult finalResult(
     const double right_hand_side_norm = globalNorm(right_hand_side);
     const double reporting_scale = std::max(
         convergenceScale(initial_residual, right_hand_side_norm),
-        absolute_residual_tolerance / tolerance);
+        config.absolute_tolerance / config.relative_tolerance);
 
     return {
         status,
@@ -118,13 +117,13 @@ LinearSolverResult solveFieldPCG(
     const Eigen::VectorXd& right_hand_side,
     const Mesh& mesh,
     Eigen::MatrixXd& field,
-    double tolerance,
-    int max_iterations,
+    const LinearSolverConfig& config,
     int rank,
     int num_procs,
     bool warm_start)
 {
-    if (!(tolerance > 0.0) || max_iterations <= 0 ||
+    config.validate();
+    if (config.solver != LinearSolverType::PCG ||
         right_hand_side.size() != mesh.internumber) {
         throw std::invalid_argument("PCG 参数无效");
     }
@@ -154,12 +153,12 @@ LinearSolverResult solveFieldPCG(
     const double scale = convergenceScale(
         initial_residual, globalNorm(right_hand_side));
     const double target = std::max(
-        tolerance * scale, absolute_residual_tolerance);
+        config.relative_tolerance * scale, config.absolute_tolerance);
     if (initial_residual <= target) {
         vectorToMatrix(solution, field, mesh);
         exchangeColumns(field, rank, num_procs);
         return finalResult(
-            LinearSolverStatus::Converged, 0, initial_residual, tolerance,
+            LinearSolverStatus::Converged, 0, initial_residual, config,
             right_hand_side, solution, distributed_operator);
     }
 
@@ -167,7 +166,7 @@ LinearSolverResult solveFieldPCG(
     LinearSolverStatus status = LinearSolverStatus::MaxIterations;
     int iterations = 0;
 
-    for (int iteration = 1; iteration <= max_iterations; ++iteration) {
+    for (int iteration = 1; iteration <= config.max_iterations; ++iteration) {
         distributed_operator.apply(direction, matrix_direction);
         const double direction_matrix_direction =
             globalDot(direction, matrix_direction);
@@ -215,7 +214,7 @@ LinearSolverResult solveFieldPCG(
     vectorToMatrix(solution, field, mesh);
     exchangeColumns(field, rank, num_procs);
     return finalResult(
-        status, iterations, initial_residual, tolerance,
+        status, iterations, initial_residual, config,
         right_hand_side, solution, distributed_operator);
 }
 
@@ -224,13 +223,13 @@ LinearSolverResult solveFieldBiCGSTAB(
     const Eigen::VectorXd& right_hand_side,
     const Mesh& mesh,
     Eigen::MatrixXd& field,
-    double tolerance,
-    int max_iterations,
+    const LinearSolverConfig& config,
     int rank,
     int num_procs,
     bool warm_start)
 {
-    if (!(tolerance > 0.0) || max_iterations <= 0 ||
+    config.validate();
+    if (config.solver != LinearSolverType::BiCGSTAB ||
         right_hand_side.size() != mesh.internumber) {
         throw std::invalid_argument("BiCGSTAB 参数无效");
     }
@@ -267,12 +266,12 @@ LinearSolverResult solveFieldBiCGSTAB(
     const double scale = convergenceScale(
         initial_residual, globalNorm(right_hand_side));
     const double target = std::max(
-        tolerance * scale, absolute_residual_tolerance);
+        config.relative_tolerance * scale, config.absolute_tolerance);
     if (initial_residual <= target) {
         vectorToMatrix(solution, field, mesh);
         exchangeColumns(field, rank, num_procs);
         return finalResult(
-            LinearSolverStatus::Converged, 0, initial_residual, tolerance,
+            LinearSolverStatus::Converged, 0, initial_residual, config,
             right_hand_side, solution, distributed_operator);
     }
 
@@ -282,7 +281,7 @@ LinearSolverResult solveFieldBiCGSTAB(
     LinearSolverStatus status = LinearSolverStatus::MaxIterations;
     int iterations = 0;
 
-    for (int iteration = 1; iteration <= max_iterations; ++iteration) {
+    for (int iteration = 1; iteration <= config.max_iterations; ++iteration) {
         const double rho = globalDot(shadow_residual, residual);
         if (invalidScalar(rho) || std::abs(rho) <= breakdown_tolerance ||
             invalidScalar(omega) || std::abs(omega) <= breakdown_tolerance) {
@@ -377,6 +376,29 @@ LinearSolverResult solveFieldBiCGSTAB(
     vectorToMatrix(solution, field, mesh);
     exchangeColumns(field, rank, num_procs);
     return finalResult(
-        status, iterations, initial_residual, tolerance,
+        status, iterations, initial_residual, config,
         right_hand_side, solution, distributed_operator);
+}
+
+LinearSolverResult solveField(
+    const Equation& equation,
+    const Eigen::VectorXd& right_hand_side,
+    const Mesh& mesh,
+    Eigen::MatrixXd& field,
+    const LinearSolverConfig& config,
+    int rank,
+    int num_procs)
+{
+    config.validate();
+    switch (config.solver) {
+        case LinearSolverType::BiCGSTAB:
+            return solveFieldBiCGSTAB(
+                equation, right_hand_side, mesh, field, config,
+                rank, num_procs, config.warm_start);
+        case LinearSolverType::PCG:
+            return solveFieldPCG(
+                equation, right_hand_side, mesh, field, config,
+                rank, num_procs, config.warm_start);
+    }
+    throw std::invalid_argument("未知线性求解器类型");
 }

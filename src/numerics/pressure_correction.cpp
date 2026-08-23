@@ -22,7 +22,7 @@ void assemblePressureCorrection(
         for (int i = 0; i < mesh.ny; ++i) {
             local_has_pressure_outlet = std::max(
                 local_has_pressure_outlet,
-                isPressureOutlet(mesh.bctype(i, j)) ? 1 : 0);
+                isFixedPressureBoundaryCell(mesh, i, j) ? 1 : 0);
         }
     }
     int global_has_pressure_outlet = 0;
@@ -45,12 +45,11 @@ void assemblePressureCorrection(
             double distance,
             double& coefficient)
         {
-            const int type = mesh.bctype(i, neighbour_j);
-            if (isCoupledCell(type)) {
+            if (isCoupledCell(mesh, i, neighbour_j)) {
                 coefficient = area * stencil::xFaceMobility(
                     mesh, momentum, i, std::min(j, neighbour_j));
                 diagonal += coefficient;
-            } else if (isPressureOutlet(type)) {
+            } else if (isFixedPressureBoundaryCell(mesh, i, neighbour_j)) {
                 // fixedValue p'=0: the boundary term contributes only to aP.
                 coefficient = area * stencil::pressureBoundaryMobility(
                     mesh, momentum, i, j, distance);
@@ -67,12 +66,11 @@ void assemblePressureCorrection(
             double distance,
             double& coefficient)
         {
-            const int type = mesh.bctype(neighbour_i, j);
-            if (isCoupledCell(type)) {
+            if (isCoupledCell(mesh, neighbour_i, j)) {
                 coefficient = area * stencil::yFaceMobility(
                     mesh, momentum, std::min(i, neighbour_i), j);
                 diagonal += coefficient;
-            } else if (isPressureOutlet(type)) {
+            } else if (isFixedPressureBoundaryCell(mesh, neighbour_i, j)) {
                 coefficient = area * stencil::pressureBoundaryMobility(
                     mesh, momentum, i, j, distance);
                 diagonal += coefficient;
@@ -135,13 +133,14 @@ void correctPressure(Mesh& mesh, double pressure_relaxation) {
     }
     mesh.p = mesh.p_star;
 
-    for (int j = 0; j < mesh.nx; ++j) {
-        for (int i = 0; i < mesh.ny; ++i) {
-            if (isPressureOutlet(mesh.bctype(i, j))) {
-                mesh.p(i, j) = 0.0;
-                mesh.p_star(i, j) = 0.0;
-                mesh.p_prime(i, j) = 0.0;
-            }
+    for (const BoundaryPatch& patch : mesh.boundary_patches) {
+        if (!hasFixedPressure(patch)) {
+            continue;
+        }
+        for (const CellIndex cell : patch.cells) {
+            mesh.p(cell.i, cell.j) = patch.pressure.value;
+            mesh.p_star(cell.i, cell.j) = patch.pressure.value;
+            mesh.p_prime(cell.i, cell.j) = 0.0;
         }
     }
 }
@@ -175,18 +174,20 @@ void correctVelocity(Mesh& mesh, const Equation& momentum) {
 
     for (int j = 0; j < mesh.nx - 1; ++j) {
         for (int i = 0; i < mesh.ny; ++i) {
-            const int left = mesh.bctype(i, j);
-            const int right = mesh.bctype(i, j + 1);
-            if (isCoupledCell(left) && isCoupledCell(right) &&
-                (isInterior(left) || isInterior(right))) {
+            if (isCoupledCell(mesh, i, j) &&
+                isCoupledCell(mesh, i, j + 1) &&
+                (isInteriorCell(mesh, i, j) ||
+                 isInteriorCell(mesh, i, j + 1))) {
                 mesh.u_face(i, j) +=
                     stencil::xFaceMobility(mesh, momentum, i, j) *
                     (mesh.p_prime(i, j) - mesh.p_prime(i, j + 1));
-            } else if (isPressureOutlet(right) && isInterior(left)) {
+            } else if (isFixedPressureBoundaryCell(mesh, i, j + 1) &&
+                       isInteriorCell(mesh, i, j)) {
                 const double distance = mesh.x_c(i, j + 1) - mesh.x_c(i, j);
                 mesh.u_face(i, j) += stencil::pressureBoundaryMobility(
                     mesh, momentum, i, j, distance) * mesh.p_prime(i, j);
-            } else if (isPressureOutlet(left) && isInterior(right)) {
+            } else if (isFixedPressureBoundaryCell(mesh, i, j) &&
+                       isInteriorCell(mesh, i, j + 1)) {
                 const double distance = mesh.x_c(i, j + 1) - mesh.x_c(i, j);
                 mesh.u_face(i, j) -= stencil::pressureBoundaryMobility(
                     mesh, momentum, i, j + 1, distance) *
@@ -197,18 +198,20 @@ void correctVelocity(Mesh& mesh, const Equation& momentum) {
 
     for (int j = 0; j < mesh.nx; ++j) {
         for (int i = 0; i < mesh.ny - 1; ++i) {
-            const int lower = mesh.bctype(i, j);
-            const int upper = mesh.bctype(i + 1, j);
-            if (isCoupledCell(lower) && isCoupledCell(upper) &&
-                (isInterior(lower) || isInterior(upper))) {
+            if (isCoupledCell(mesh, i, j) &&
+                isCoupledCell(mesh, i + 1, j) &&
+                (isInteriorCell(mesh, i, j) ||
+                 isInteriorCell(mesh, i + 1, j))) {
                 mesh.v_face(i, j) +=
                     stencil::yFaceMobility(mesh, momentum, i, j) *
                     (mesh.p_prime(i, j) - mesh.p_prime(i + 1, j));
-            } else if (isPressureOutlet(upper) && isInterior(lower)) {
+            } else if (isFixedPressureBoundaryCell(mesh, i + 1, j) &&
+                       isInteriorCell(mesh, i, j)) {
                 const double distance = mesh.y_c(i + 1, j) - mesh.y_c(i, j);
                 mesh.v_face(i, j) += stencil::pressureBoundaryMobility(
                     mesh, momentum, i, j, distance) * mesh.p_prime(i, j);
-            } else if (isPressureOutlet(lower) && isInterior(upper)) {
+            } else if (isFixedPressureBoundaryCell(mesh, i, j) &&
+                       isInteriorCell(mesh, i + 1, j)) {
                 const double distance = mesh.y_c(i + 1, j) - mesh.y_c(i, j);
                 mesh.v_face(i, j) -= stencil::pressureBoundaryMobility(
                     mesh, momentum, i + 1, j, distance) *

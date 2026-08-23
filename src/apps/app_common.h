@@ -29,7 +29,8 @@ void printSimulationSetup(
     const Mesh& local_mesh,
     int rank,
     int num_procs,
-    const SolverConfig& config);
+    const NumericalSchemes& schemes,
+    const SolutionConfig& solution);
 
 void printIterationResult(
     int iteration,

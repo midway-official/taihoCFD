@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -48,8 +49,10 @@ Mesh readMesh(const std::string& folder_path) {
     }
 
     Mesh mesh(ny, nx);
-    readMatrixFile(folder / "bctype.dat", mesh.bctype);
-    readMatrixFile(folder / "zoneid.dat", mesh.zoneid);
+    Eigen::MatrixXi legacy_type(ny, nx);
+    Eigen::MatrixXi legacy_zone(ny, nx);
+    readMatrixFile(folder / "bctype.dat", legacy_type);
+    readMatrixFile(folder / "zoneid.dat", legacy_zone);
     readMatrixFile(folder / "x.dat", mesh.x);
     readMatrixFile(folder / "y.dat", mesh.y);
 
@@ -59,14 +62,18 @@ Mesh readMesh(const std::string& folder_path) {
     }
     double u_value = 0.0;
     double v_value = 0.0;
+    std::vector<double> zone_u;
+    std::vector<double> zone_v;
     while (zone_file >> u_value >> v_value) {
-        mesh.zoneu.push_back(u_value);
-        mesh.zonev.push_back(v_value);
+        zone_u.push_back(u_value);
+        zone_v.push_back(v_value);
     }
-    if (mesh.zoneu.empty() || mesh.zoneu.size() != mesh.zonev.size()) {
+    if (zone_u.empty() || zone_u.size() != zone_v.size()) {
         throw std::runtime_error("zoneuv.txt 为空或格式错误");
     }
 
+    importLegacyBoundaryData(
+        mesh, legacy_type, legacy_zone, zone_u, zone_v);
     mesh.createInterId();
     initializeBoundaryConditions(mesh);
     mesh.initGeometry();

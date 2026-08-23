@@ -26,12 +26,14 @@ SimpleSolver::SimpleSolver(
     double viscosity,
     int rank,
     int num_procs,
-    SolverConfig config)
+    NumericalSchemes schemes,
+    SolutionConfig solution)
     : mesh_(mesh),
       viscosity_(viscosity),
       rank_(rank),
       num_procs_(num_procs),
-      config_(config),
+      schemes_(schemes),
+      solution_(solution),
       momentum_(mesh),
       pressure_(mesh),
       source_v_(Eigen::VectorXd::Zero(mesh.internumber)),
@@ -44,6 +46,8 @@ SimpleSolver::SimpleSolver(
     if (rank_ < 0 || rank_ >= num_procs_) {
         throw std::invalid_argument("非法 MPI rank/size");
     }
+    schemes_.validate();
+    solution_.validate();
 }
 
 SimpleIterationResult SimpleSolver::solveIteration(const TimeTerm& time_term) {
@@ -52,30 +56,28 @@ SimpleIterationResult SimpleSolver::solveIteration(const TimeTerm& time_term) {
 
     assembleMomentum(
         mesh_, momentum_, source_v_, viscosity_,
-        config_.velocity_relaxation, time_term);
+        solution_.simple.velocity_relaxation, time_term, schemes_);
     mesh_.u = mesh_.u_star;
     mesh_.v = mesh_.v_star;
 
     SimpleIterationResult result;
-    result.u = solveFieldBiCGSTAB(
+    result.u = solveField(
         momentum_, momentum_.source, mesh_, mesh_.u,
-        config_.linear_tolerance, config_.momentum_max_iterations,
-        rank_, num_procs_, true);
-    result.v = solveFieldBiCGSTAB(
+        solution_.velocity, rank_, num_procs_);
+    result.v = solveField(
         momentum_, source_v_, mesh_, mesh_.v,
-        config_.linear_tolerance, config_.momentum_max_iterations,
-        rank_, num_procs_, true);
+        solution_.velocity, rank_, num_procs_);
 
     exchangeColumns(momentum_.A_p, rank_, num_procs_);
-    interpolateFaceVelocity(mesh_, momentum_);
+    interpolateFaceVelocity(
+        mesh_, momentum_, schemes_.face_interpolation);
     assemblePressureCorrection(
         mesh_, pressure_, momentum_, rank_, num_procs_);
-    result.pressure = solveFieldPCG(
+    result.pressure = solveField(
         pressure_, pressure_.source, mesh_, mesh_.p_prime,
-        config_.linear_tolerance, config_.pressure_max_iterations,
-        rank_, num_procs_, false);
+        solution_.pressure, rank_, num_procs_);
 
-    correctPressure(mesh_, config_.pressure_relaxation);
+    correctPressure(mesh_, solution_.simple.pressure_relaxation);
     correctVelocity(mesh_, momentum_);
     exchangeColumns(mesh_.p, rank_, num_procs_);
 
@@ -111,7 +113,8 @@ SimpleIterationResult SimpleSolver::solveIteration(const TimeTerm& time_term) {
     result.converged = result.healthy &&
         result.u.converged() && result.v.converged() &&
         result.pressure.converged() &&
-        result.continuity.relative <= config_.continuity_tolerance &&
-        result.relative_velocity_change <= config_.velocity_change_tolerance;
+        result.continuity.relative <= solution_.simple.residual.continuity &&
+        result.relative_velocity_change <=
+            solution_.simple.residual.velocity_change;
     return result;
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "numerics/equation.h"
+#include "solvers/solution_config.h"
 
 #include <string_view>
 
@@ -22,24 +23,11 @@ struct LinearSolverResult {
 
 std::string_view toString(LinearSolverStatus status);
 
-LinearSolverResult solveFieldBiCGSTAB(
+LinearSolverResult solveField(
     const Equation& equation,
     const Eigen::VectorXd& right_hand_side,
     const Mesh& mesh,
     Eigen::MatrixXd& field,
-    double tolerance,
-    int max_iterations,
+    const LinearSolverConfig& config,
     int rank,
-    int num_procs,
-    bool warm_start = true);
-
-LinearSolverResult solveFieldPCG(
-    const Equation& equation,
-    const Eigen::VectorXd& right_hand_side,
-    const Mesh& mesh,
-    Eigen::MatrixXd& field,
-    double tolerance,
-    int max_iterations,
-    int rank,
-    int num_procs,
-    bool warm_start = false);
+    int num_procs);

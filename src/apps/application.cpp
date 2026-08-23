@@ -13,16 +13,22 @@
 
 namespace {
 
-SolverConfig solverConfig(SimulationMode mode) {
-    SolverConfig config;
-    config.pressure_relaxation = 0.3;
-    config.velocity_relaxation =
+SolutionConfig solutionConfig(
+    SimulationMode mode,
+    const SimulationParameters& parameters)
+{
+    SolutionConfig config;
+    config.simple.max_iterations =
+        mode == SimulationMode::Steady ? parameters.steps : 30;
+    config.simple.pressure_relaxation = 0.3;
+    config.simple.velocity_relaxation =
         mode == SimulationMode::Steady ? 0.5 : 0.7;
-    config.linear_tolerance = 1e-7;
-    config.momentum_max_iterations = 200;
-    config.pressure_max_iterations = 1000;
-    config.continuity_tolerance = 1e-7;
-    config.velocity_change_tolerance =
+    config.velocity.relative_tolerance = 1e-7;
+    config.velocity.max_iterations = 200;
+    config.pressure.relative_tolerance = 1e-7;
+    config.pressure.max_iterations = 1000;
+    config.simple.residual.continuity = 1e-7;
+    config.simple.residual.velocity_change =
         mode == SimulationMode::Steady ? 1e-6 : 1e-4;
     return config;
 }
@@ -39,16 +45,18 @@ void runSimulation(
     }();
     initializeFlowFields(mesh);
 
-    const SolverConfig config = solverConfig(mode);
+    const NumericalSchemes schemes = mode == SimulationMode::Steady
+        ? NumericalSchemes::steady()
+        : NumericalSchemes::backwardEuler();
+    const SolutionConfig solution = solutionConfig(mode, parameters);
     printSimulationSetup(
-        mode, parameters, mesh, rank, num_procs, config);
+        mode, parameters, mesh, rank, num_procs, schemes, solution);
     SimpleSolver solver(
-        mesh, parameters.viscosity, rank, num_procs, config);
+        mesh, parameters.viscosity, rank, num_procs, schemes, solution);
 
     const int time_steps =
         mode == SimulationMode::Steady ? 1 : parameters.steps;
-    const int simple_limit =
-        mode == SimulationMode::Steady ? parameters.steps : 30;
+    const int simple_limit = solution.simple.max_iterations;
     const auto start = std::chrono::steady_clock::now();
 
     for (int time_step = 1; time_step <= time_steps; ++time_step) {

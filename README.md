@@ -25,7 +25,7 @@
 - **SIMPLE 算法**：压力速度耦合，支持松弛因子调节
 - **定常 / 非定常**：分别对应 `solver_simple_steady` 和 `solver_simple_unsteady`
 - **MPI 并行**：沿 x 方向域分解，ghost 层自动交换
-- **结构化四边形网格**：支持非均匀拉伸网格，几何量（面积、体积）自动计算
+- **二维正交结构网格**：支持坐标方向的非均匀拉伸，几何量自动计算
 - **匹配矩阵性质的线性求解器**：非对称动量方程使用 BiCGSTAB+ILUT，压力修正使用 PCG+不完全 Cholesky
 - **多种边界条件**：无滑移壁面、速度入口、压力出口、并行接口层
 - **物理收敛检测**：同时检查全局质量不平衡和速度场相对变化
@@ -37,9 +37,9 @@
 ```
 .
 ├── src/
-│   ├── mesh/                        # 网格容器、几何量和边界条件
-│   ├── numerics/                    # 动量、Rhie-Chow、压力修正和连续性
-│   ├── solvers/                     # SIMPLE、BiCGSTAB 和 PCG
+│   ├── mesh/                        # 网格、patch 和逐字段边界条件
+│   ├── numerics/                    # FVM 算子、离散格式、Rhie-Chow 和压力修正
+│   ├── solvers/                     # SIMPLE、求解控制、BiCGSTAB 和 PCG
 │   ├── parallel/                    # 域分解与 halo 交换
 │   ├── io/                          # 网格读取与结果输出
 │   └── apps/                        # 共用运行循环及两个轻量入口
@@ -150,23 +150,31 @@ mpirun -np 4 ./solver_simple_unsteady ldc_exp 0.01 200 0.01
 |------|--------|------|
 | `pressure_relaxation` | 0.3 | 压力松弛因子 |
 | `velocity_relaxation` | 0.5（稳态）/ 0.7（非稳态） | 动量松弛因子 |
-| `linear_tolerance` | 1e-7 | 线性方程归一化残差容差 |
-| `momentum_max_iterations` | 200 | 动量 BiCGSTAB 最大迭代次数 |
-| `pressure_max_iterations` | 1000 | 压力 PCG 最大迭代次数 |
+| `velocity.relative_tolerance` | 1e-7 | 动量方程相对残差容差 |
+| `pressure.relative_tolerance` | 1e-7 | 压力方程相对残差容差 |
+| `velocity.max_iterations` | 200 | 动量 BiCGSTAB 最大迭代次数 |
+| `pressure.max_iterations` | 1000 | 压力 PCG 最大迭代次数 |
+| `simple.residual.continuity` | 1e-7 | 全局连续性收敛容差 |
 
 ---
 
 ## 边界条件说明
 
-`bctype` 矩阵中各值的含义：
+当前算例文件仍兼容原有 `bctype.dat/zoneid.dat/zoneuv.txt`。读取器会把
+legacy 整数编码转换成几何 patch，并分别生成速度场 `U` 和压力场 `p`
+的边界条件；求解核心不再直接判断这些整数。
 
 | 值 | 类型 | 说明 |
 |----|------|------|
 | `0` | 内部点 | 参与方程求解 |
-| `> 0`（如 `1`） | 无滑移壁面 | 速度由 `zoneuv.txt` 指定 |
-| `-1` | 压力出口 | 给定零表压；压力修正采用 `p'=0`，边界系数加入对角项 |
-| `-2` | 速度入口 | 给定速度，由 `zoneuv.txt` 指定 |
-| `-3` | MPI 并行接口 | 程序自动生成，用户无需设置 |
+| `> 0`（如 `1`） | wall patch | `U=fixedValue/noSlip`，`p=zeroGradient` |
+| `-1` | pressure outlet patch | `U=zeroGradient`，`p=fixedValue(0)` |
+| `-2` | velocity inlet patch | `U=fixedValue`，`p=zeroGradient` |
+| `-3` | legacy processor 标记 | 正常算例不应设置；MPI 分解会生成独立 `Processor` 拓扑 |
+
+边界模型支持 `FixedValue`、`ZeroGradient`、`InletOutlet` 和 `NoSlip`。
+压力固定值保存在压力场条件中，因此不再局限于零表压。几何 patch、
+字段边界条件和 MPI processor 拓扑相互独立。
 
 ---
 
@@ -234,13 +242,30 @@ python postprocess.py
 6. 收敛判断（全局质量不平衡 + 速度场相对变化）
 ```
 
-有定压出口时，压力修正采用固定值 `p'=0` 并将边界系数加入方程对角项；没有定压出口的闭域只设置一个参考压力单元。并行策略采用沿 x 方向的**域分解**，相邻子域间各设置 2 层 ghost 单元（`bctype=-3`），通过 `MPI_Sendrecv` 交换连续列缓冲区。
+有定压出口时，压力修正采用固定值 `p'=0` 并将边界系数加入方程对角项；没有定压出口的闭域只设置一个参考压力单元。并行策略采用沿 x 方向的**域分解**，相邻子域间各设置 2 层 `Processor` ghost 单元，通过 `MPI_Sendrecv` 交换连续列缓冲区。
 
-稳态和非稳态共用同一个 SIMPLE 循环。稳态传入 `TimeTerm::none()`；非稳态传入包含 `dt/u_previous/v_previous` 的后向欧拉时间项。四个方向的动量边界统一由同一个面贡献函数组装。
+稳态和非稳态共用同一个 SIMPLE 循环。动量方程由四个显式有限体积
+算子组成：`addDdt`、`addConvection`、`addLaplacian` 和
+`addPressureGradient`，最后统一应用速度方程松弛。
+
+当前 `NumericalSchemes` 明确限定为：
+
+| 项 | 格式 |
+|----|------|
+| 时间项 | `steadyState` 或一阶 `backwardEuler` |
+| `div(phi,U)` | 一阶 `upwind` |
+| `grad(p)` | 单元中心 `central` |
+| `laplacian(mu,U)` | 两点 `orthogonal` |
+| 面速度插值 | `linear` + Rhie-Chow 修正 |
+
+离散方式由 `NumericalSchemes` 管理；线性求解器、预条件器、绝对/相对
+容差由 `SolutionConfig` 管理；SIMPLE迭代、松弛和收敛条件由
+`SimpleControl` 管理。未实现的格式或求解器组合会在启动时明确拒绝。
 
 数值装配回归测试可通过 `make test` 执行：压力测试覆盖压力出口
-Dirichlet 对角项和闭域单参考压力；动量测试验证时间项只增加
-`V/dt` 对角项与历史速度源项，不改变空间离散系数。
+Dirichlet 对角项和闭域单参考压力；动量测试验证时间项和四算子组合；
+边界测试验证 legacy 转换、逐字段条件、非零固定压力和 MPI processor
+拓扑。
 
 可运行 `make test-pressure` 回归检查定压出口对角项、闭域参考压力、压力矩阵对称性和 PCG 收敛。
 

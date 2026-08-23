@@ -23,14 +23,11 @@ double pressureSample(
     int owner_i,
     int owner_j)
 {
-    const int type = mesh.bctype(i, j);
-    if (isCoupledCell(type)) {
+    if (isCoupledCell(mesh, i, j)) {
         return mesh.p(i, j);
     }
-    if (isPressureOutlet(type)) {
-        return 0.0;
-    }
-    return mesh.p(owner_i, owner_j);
+    return evaluatePressureBoundary(
+        boundaryPatch(mesh, i, j), mesh.p(owner_i, owner_j));
 }
 
 double pressureCorrectionSample(
@@ -40,11 +37,12 @@ double pressureCorrectionSample(
     int owner_i,
     int owner_j)
 {
-    const int type = mesh.bctype(i, j);
-    if (isCoupledCell(type)) {
+    if (isCoupledCell(mesh, i, j)) {
         return mesh.p_prime(i, j);
     }
-    if (isPressureOutlet(type)) {
+    const ScalarBoundaryCondition& condition =
+        boundaryPatch(mesh, i, j).pressure;
+    if (fixesValue(condition.type)) {
         return 0.0;
     }
     return mesh.p_prime(owner_i, owner_j);

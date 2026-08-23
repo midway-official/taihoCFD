@@ -41,16 +41,15 @@ Mesh extractLocalMesh(const Mesh& original, int rank, int num_procs) {
     }
 
     Mesh local(original.ny, local_nx);
-    local.zoneu = original.zoneu;
-    local.zonev = original.zonev;
+    local.boundary_patches = original.boundary_patches;
     local.owned_j_begin = left_ghost;
     local.owned_j_end = left_ghost + owned_width;
 
     for (int j = 0; j < local_nx; ++j) {
         const int original_j = original_offset + j;
         for (int i = 0; i < original.ny; ++i) {
-            local.bctype(i, j) = original.bctype(i, original_j);
-            local.zoneid(i, j) = original.zoneid(i, original_j);
+            local.cell_kind(i, j) = original.cell_kind(i, original_j);
+            local.patch_id(i, j) = original.patch_id(i, original_j);
         }
     }
     for (int j = 0; j <= local_nx; ++j) {
@@ -62,14 +61,17 @@ Mesh extractLocalMesh(const Mesh& original, int rank, int num_procs) {
     }
 
     if (left_ghost > 0) {
-        local.bctype.leftCols(ghost_layers).setConstant(
-            static_cast<int>(BoundaryType::MpiGhost));
+        local.cell_kind.leftCols(ghost_layers).setConstant(
+            static_cast<int>(CellKind::Processor));
+        local.patch_id.leftCols(ghost_layers).setConstant(-1);
     }
     if (right_ghost > 0) {
-        local.bctype.rightCols(ghost_layers).setConstant(
-            static_cast<int>(BoundaryType::MpiGhost));
+        local.cell_kind.rightCols(ghost_layers).setConstant(
+            static_cast<int>(CellKind::Processor));
+        local.patch_id.rightCols(ghost_layers).setConstant(-1);
     }
 
+    rebuildBoundaryPatchCells(local);
     local.createInterId();
     initializeBoundaryConditions(local);
     local.initGeometry();

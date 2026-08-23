@@ -3,16 +3,7 @@
 #include "numerics/continuity.h"
 #include "numerics/momentum.h"
 #include "solvers/linear_solver.h"
-
-struct SolverConfig {
-    double pressure_relaxation = 0.3;
-    double velocity_relaxation = 0.5;
-    double linear_tolerance = 1e-7;
-    int momentum_max_iterations = 200;
-    int pressure_max_iterations = 200;
-    double continuity_tolerance = 1e-7;
-    double velocity_change_tolerance = 1e-7;
-};
+#include "solvers/solution_config.h"
 
 struct SimpleIterationResult {
     LinearSolverResult u;
@@ -32,7 +23,8 @@ public:
         double viscosity,
         int rank,
         int num_procs,
-        SolverConfig config = {});
+        NumericalSchemes schemes = NumericalSchemes::steady(),
+        SolutionConfig solution = {});
 
     SimpleIterationResult solveIteration(const TimeTerm& time_term);
 
@@ -41,7 +33,8 @@ private:
     double viscosity_;
     int rank_;
     int num_procs_;
-    SolverConfig config_;
+    NumericalSchemes schemes_;
+    SolutionConfig solution_;
     Equation momentum_;
     Equation pressure_;
     Eigen::VectorXd source_v_;

@@ -89,7 +89,8 @@ void printSimulationSetup(
     const Mesh& local_mesh,
     int rank,
     int num_procs,
-    const SolverConfig& config)
+    const NumericalSchemes& schemes,
+    const SolutionConfig& solution)
 {
     int local_cells = local_mesh.internumber;
     int global_cells = 0;
@@ -111,10 +112,21 @@ void printSimulationSetup(
     } else {
         std::cout << " | max SIMPLE=" << parameters.steps;
     }
-    std::cout << "\nlinear tol=" << config.linear_tolerance
-              << " | continuity tol=" << config.continuity_tolerance
+    std::cout << "\nschemes: ddt=" << toString(schemes.time)
+              << " div(U)=" << toString(schemes.velocity_convection)
+              << " grad(p)=" << toString(schemes.pressure_gradient)
+              << " laplacian(U)=" << toString(schemes.velocity_laplacian)
+              << " interpolation=" << toString(schemes.face_interpolation)
+              << "\nlinear: U=" << toString(solution.velocity.solver)
+              << '/' << toString(solution.velocity.preconditioner)
+              << " p=" << toString(solution.pressure.solver)
+              << '/' << toString(solution.pressure.preconditioner)
+              << " | relTol(U,p)="
+              << solution.velocity.relative_tolerance << ','
+              << solution.pressure.relative_tolerance
+              << " | continuity tol=" << solution.simple.residual.continuity
               << " | velocity-change tol="
-              << config.velocity_change_tolerance << '\n';
+              << solution.simple.residual.velocity_change << '\n';
 }
 
 void printIterationResult(

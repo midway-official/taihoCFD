@@ -32,8 +32,8 @@ struct Mesh {
     Eigen::MatrixXd u_face;
     Eigen::MatrixXd v_face;
 
-    Eigen::MatrixXi bctype;
-    Eigen::MatrixXi zoneid;
+    Eigen::MatrixXi cell_kind;
+    Eigen::MatrixXi patch_id;
     Eigen::MatrixXi interid;
 
     int internumber = 0;
@@ -44,8 +44,7 @@ struct Mesh {
 
     std::vector<int> interi;
     std::vector<int> interj;
-    std::vector<double> zoneu;
-    std::vector<double> zonev;
+    std::vector<BoundaryPatch> boundary_patches;
 
     Mesh() = default;
     Mesh(int n_y, int n_x);
@@ -54,8 +53,5 @@ struct Mesh {
     void initGeometry();
     void createInterId();
     void validate(bool require_physical_outer_boundary) const;
-    void setBlock(int x1, int y1, int x2, int y2, int bc_value, int zone_value);
-    void setZoneUV(std::size_t zone_index, double u_value, double v_value);
-
     int ownedColumns() const { return owned_j_end - owned_j_begin; }
 };
