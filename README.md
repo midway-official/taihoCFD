@@ -1,299 +1,233 @@
-# Taiho-CFD：二维不可压缩 Navier-Stokes 求解器
+# Taiho-CFD
 
-基于有限体积法（FVM）和 SIMPLE 算法的二维不可压缩 Navier-Stokes 方程 MPI 并行求解器，支持定常与非定常两种计算模式。
+Taiho-CFD 是一个基于 C++17、Eigen 和 MPI 的二维不可压缩 Navier–Stokes
+有限体积求解器。当前实现采用 SIMPLE 压力-速度耦合，提供定常和一阶
+Backward Euler 非定常计算，并针对结构化正交网格进行验证。
 
----
+## 当前实现范围
 
-## 目录
+- 二维、结构化、轴对齐正交网格；支持 x/y 方向非均匀拉伸。
+- SIMPLE 迭代，沿 x 方向 MPI 域分解，每个子域使用两层 ghost 单元。
+- 速度方程：一阶 Upwind 对流、Orthogonal 两点扩散、Central 压力梯度。
+- 面速度：线性插值和 Rhie–Chow 修正。
+- 动量方程使用 BiCGSTAB + ILUT，压力修正方程使用 PCG + incomplete Cholesky。
+- 壁面、速度入口、压力出口和 MPI Processor 接口。
+- 压力出口将 Dirichlet 条件正确加入压力方程对角项；全封闭区域使用单个压力参考单元。
 
-- [功能特性](#功能特性)
-- [项目结构](#项目结构)
-- [依赖环境](#依赖环境)
-- [编译](#编译)
-- [网格生成](#网格生成)
-- [运行](#运行)
-- [边界条件说明](#边界条件说明)
-- [网格文件格式](#网格文件格式)
-- [后处理](#后处理)
-- [算法说明](#算法说明)
-- [示例：顶盖驱动方腔流](#示例顶盖驱动方腔流)
+当前不包含非正交修正、复杂几何边界、湍流模型和多组分物理。`docs/thesis/`
+中的内容是后续研究规划，不代表当前代码已经实现的功能。
 
----
+## 目录结构
 
-## 功能特性
-
-- **SIMPLE 算法**：压力速度耦合，支持松弛因子调节
-- **定常 / 非定常**：分别对应 `solver_simple_steady` 和 `solver_simple_unsteady`
-- **MPI 并行**：沿 x 方向域分解，ghost 层自动交换
-- **二维正交结构网格**：支持坐标方向的非均匀拉伸，几何量自动计算
-- **匹配矩阵性质的线性求解器**：非对称动量方程使用 BiCGSTAB+ILUT，压力修正使用 PCG+不完全 Cholesky
-- **多种边界条件**：无滑移壁面、速度入口、压力出口、并行接口层
-- **物理收敛检测**：同时检查全局质量不平衡和速度场相对变化
-
----
-
-## 项目结构
-
-```
+```text
 .
 ├── src/
-│   ├── mesh/                        # 网格、patch 和逐字段边界条件
-│   ├── numerics/                    # FVM 算子、离散格式、Rhie-Chow 和压力修正
-│   ├── solvers/                     # SIMPLE、求解控制、BiCGSTAB 和 PCG
-│   ├── parallel/                    # 域分解与 halo 交换
-│   ├── io/                          # 网格读取与结果输出
-│   └── apps/                        # 共用运行循环及两个轻量入口
+│   ├── apps/                 # 定常/非定常入口和共用运行循环
+│   ├── io/                   # 网格读取、MPI 结果写出
+│   ├── mesh/                 # 网格几何、CellKind、BoundaryPatch
+│   ├── numerics/             # 离散算子、动量、压力修正、Rhie–Chow
+│   ├── parallel/             # x 方向域分解和 halo 交换
+│   └── solvers/              # 线性求解器和 SIMPLE 求解器
+├── tests/                    # 压力、动量和边界模型回归测试
+├── tools/
+│   ├── generate_mesh.py      # 网格生成和输入校验
+│   └── postprocess.py        # MPI 结果拼接、VTK/Tecplot/PNG 输出
+├── examples/
+│   ├── meshes/               # 可直接读取的示例网格
+│   └── notebooks/            # 网格、后处理和网格检查 notebook
+├── docs/thesis/              # 论文目录和后续规划
 ├── Makefile
-├── gen.ipynb                    # 顶盖方腔网格生成脚本（示例）
-└── plot.ipynb                   # 后处理与可视化脚本
+└── LICENSE
 ```
 
----
+编译生成的 `build/`、`report/`、求解器可执行文件和运行结果不属于源代码，
+由 `.gitignore` 排除；运行结果建议放在单独的 case 目录中。
 
-## 依赖环境
+## 依赖和编译
 
-| 依赖 | 版本要求 | 说明 |
-|------|----------|------|
-| MPI  | 任意标准实现（OpenMPI / MPICH） | 并行通信 |
-| Eigen | ≥ 3.4 | 稀疏矩阵与线性代数 |
-| C++ 编译器 | 支持 C++17 | `std::filesystem` 等 |
-| Python 3 | ≥ 3.8（后处理可选） | numpy / matplotlib / scipy |
+需要：
 
-Ubuntu / Debian 安装示例：
+- MPI（OpenMPI 或 MPICH）
+- Eigen 3
+- 支持 C++17 的 C++ 编译器
+- Python 3.8+、NumPy；生成 PNG 时还需要 Matplotlib
+
+Ubuntu/Debian 示例：
 
 ```bash
 sudo apt install libopenmpi-dev libeigen3-dev
-pip install numpy matplotlib scipy
+python3 -m pip install numpy matplotlib
 ```
 
----
-
-## 编译
+构建主程序和测试程序：
 
 ```bash
-make          # 同时编译定常与非定常求解器
-make clean    # 清理构建产物
+make                 # solver_simple_steady、solver_simple_unsteady
+make test            # 全部回归测试
+make test-pressure   # 压力出口/压力参考测试
+make test-momentum   # 稳态/非稳态动量装配测试
+make test-boundary   # patch、字段边界和 MPI 拓扑测试
+make debug           # ASan/UBSan 调试构建
+make clean           # 删除 build/ 和本地可执行文件
+make distclean       # 额外删除编译报告
 ```
-
-编译成功后生成两个可执行文件：
-
-```
-solver_simple_steady
-solver_simple_unsteady
-```
-
----
 
 ## 网格生成
 
-使用 `gen.ipynb`（以顶盖驱动方腔为例）生成所需网格文件：
+当前 C++ reader 使用以下 legacy 文本输入，但读取后立即转换为
+`BoundaryPatch` 和逐字段边界条件：
 
 ```bash
-python gen.ipynb
+python3 tools/generate_mesh.py cavity \
+  --nx 64 --ny 64 --alpha-x 4 --alpha-y 4 \
+  --output-dir examples/meshes/ldc_stretched
+
+python3 tools/generate_mesh.py poiseuille \
+  --nx 200 --ny 80 --lx 3 --ly 0.2 --alpha-y 4 \
+  --output-dir examples/meshes/poiseuille
 ```
 
-脚本会在 `ldc_exp/` 目录下生成以下文件（详见[网格文件格式](#网格文件格式)）：
+生成器会检查尺寸、有限坐标、严格单调性、正体积假设、外边界标记和 zone
+引用。坐标约定为：数组第 0 行是 `y=0` 底部，最后一行是 `y=Ly` 顶部；
+列从 `x=0` 左侧到 `x=Lx` 右侧。因此方腔顶盖速度使用最后一行
+`zoneid[-1, :]`。
 
-```
-ldc_exp/
-├── params.txt     # 网格尺寸
-├── x.dat          # 节点 x 坐标  (ny+1)×(nx+1)
-├── y.dat          # 节点 y 坐标  (ny+1)×(nx+1)
-├── bctype.dat     # 边界类型     ny×nx
-├── zoneid.dat     # 区域编号     ny×nx
-└── zoneuv.txt     # 各区域速度值
-```
+网格输入文件：
 
-可调整的参数：
+| 文件 | 尺寸 | 含义 |
+|---|---:|---|
+| `params.txt` | 1 行 | `nx ny` |
+| `x.dat`、`y.dat` | `(ny+1)×(nx+1)` | 节点坐标 |
+| `bctype.dat` | `ny×nx` | legacy 单元边界编码 |
+| `zoneid.dat` | `ny×nx` | `zoneuv.txt` 行号 |
+| `zoneuv.txt` | `nzone×2` | 每个 zone 的 `(u,v)` |
 
-```python
-generate_lid_driven_cavity(
-    nx=100, ny=100,       # 网格分辨率
-    Lx=1.0, Ly=1.0,       # 计算域尺寸
-    lid_u=1.0, lid_v=0.0, # 顶盖速度
-    alpha_x=5.0,          # x 方向拉伸系数（越大壁面越密）
-    alpha_y=5.0,          # y 方向拉伸系数
-    output_dir="ldc_exp",
-)
-```
+`bctype.dat` 编码：
 
----
+| 值 | 类型 | 当前字段条件 |
+|---:|---|---|
+| `0` | interior | 参与方程求解 |
+| `>0` | wall | `U=fixedValue/noSlip`，`p=zeroGradient` |
+| `-2` | velocity inlet | `U=fixedValue`，`p=zeroGradient` |
+| `-1` | pressure outlet | `U=zeroGradient`，`p=fixedValue` |
+| `-3` | processor | 仅由 MPI 分解内部生成，用户网格不要设置 |
+
+当前 solver 要求 `nx,ny≥5`，四个物理外边界不能是 interior。MPI 运行时还要
+满足每个子域至少有两列真实单元，即全局 `nx` 应足够大。
 
 ## 运行
 
-### 定常求解器
+定常程序参数为：
+
+```text
+solver_simple_steady <mesh_folder> <max_simple_iterations> <viscosity>
+```
+
+非定常程序参数为：
+
+```text
+solver_simple_unsteady <mesh_folder> <dt> <time_steps> <viscosity>
+```
+
+推荐把结果写到独立目录，避免不同 MPI 规模的 rank 文件混在一起：
 
 ```bash
-# 命令行传参
-mpirun -np <进程数> ./solver_simple_steady <网格文件夹> <迭代步数> <动力粘度>
+mkdir -p runs/ldc_re100
+cd runs/ldc_re100
 
-# 示例：4 进程，最多 500 步，Re=100（mu=0.01）
-mpirun -np 4 ./solver_simple_steady ldc_exp 500 0.01
+mpirun -np 4 ../../solver_simple_steady \
+  ../../examples/meshes/ldc_stretched 1000 0.01
 
+# dt=0.01，推进 200 个时间步
+mpirun -np 4 ../../solver_simple_unsteady \
+  ../../examples/meshes/ldc_stretched 0.01 200 0.01
 ```
 
-### 非定常求解器
+程序从 MPI rank 0 读取参数并广播到所有进程。每个进程将结果写到当前工作
+目录的 `result/`：`u_<rank>.dat`、`v_<rank>.dat`、`p_<rank>.dat`、
+`xc_<rank>.dat`、`yc_<rank>.dat`。结果文件只包含 owned columns，不包含 ghost
+列；同一次计算必须使用同一个 MPI 规模进行后处理。
 
-```bash
-# 命令行传参
-mpirun -np <进程数> ./solver_simple_unsteady <网格文件夹> <时间步长dt> <总时间步数> <动力粘度>
+主要默认控制参数在 `src/apps/application.cpp` 中集中设置：
 
-# 示例：4 进程，dt=0.01，共 200 步，Re=100
-mpirun -np 4 ./solver_simple_unsteady ldc_exp 0.01 200 0.01
-```
+| 参数 | 定常 | 非定常 |
+|---|---:|---:|
+| pressure relaxation | 0.3 | 0.3 |
+| velocity relaxation | 0.5 | 0.7 |
+| velocity relative tolerance | 1e-7 | 1e-7 |
+| pressure relative tolerance | 1e-7 | 1e-7 |
+| SIMPLE continuity tolerance | 1e-7 | 1e-7 |
+| velocity-change tolerance | 1e-6 | 1e-4 |
+| velocity max linear iterations | 200 | 200 |
+| pressure max linear iterations | 1000 | 1000 |
 
-> **注意**：MPI 进程数必须与程序内部网格分割数完全一致（程序自动读取 `MPI_Comm_size`）。
+## 离散和代码接口
 
-### 关键求解参数（在源码中调整）
+稳态和非稳态共享 `SimpleSolver::solveIteration`；区别只由
+`TimeTerm::none()` 或 `TimeTerm::backwardEuler(dt, u0, v0)` 提供。动量方程
+装配位于 `src/numerics/momentum.cpp`，依次使用：
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `pressure_relaxation` | 0.3 | 压力松弛因子 |
-| `velocity_relaxation` | 0.5（稳态）/ 0.7（非稳态） | 动量松弛因子 |
-| `velocity.relative_tolerance` | 1e-7 | 动量方程相对残差容差 |
-| `pressure.relative_tolerance` | 1e-7 | 压力方程相对残差容差 |
-| `velocity.max_iterations` | 200 | 动量 BiCGSTAB 最大迭代次数 |
-| `pressure.max_iterations` | 1000 | 压力 PCG 最大迭代次数 |
-| `simple.residual.continuity` | 1e-7 | 全局连续性收敛容差 |
+1. `addDdt`：稳态无时间项，非稳态加入 `V/dt` 和旧速度源项；
+2. `addConvection`：一阶 Upwind 对流；
+3. `addLaplacian`：Orthogonal 两点扩散；
+4. `addGradient`：Central 单元中心梯度，目前用于压力梯度；
+5. `applyVelocityEquationRelaxation`：统一施加速度松弛。
 
----
+`addGradient` 是通用梯度接口，避免把离散算子名称绑定到某一个物理量；
+后续增加温度或其他标量场时可以复用同一命名和接口约定。
 
-## 边界条件说明
-
-当前算例文件仍兼容原有 `bctype.dat/zoneid.dat/zoneuv.txt`。读取器会把
-legacy 整数编码转换成几何 patch，并分别生成速度场 `U` 和压力场 `p`
-的边界条件；求解核心不再直接判断这些整数。
-
-| 值 | 类型 | 说明 |
-|----|------|------|
-| `0` | 内部点 | 参与方程求解 |
-| `> 0`（如 `1`） | wall patch | `U=fixedValue/noSlip`，`p=zeroGradient` |
-| `-1` | pressure outlet patch | `U=zeroGradient`，`p=fixedValue(0)` |
-| `-2` | velocity inlet patch | `U=fixedValue`，`p=zeroGradient` |
-| `-3` | legacy processor 标记 | 正常算例不应设置；MPI 分解会生成独立 `Processor` 拓扑 |
-
-边界模型支持 `FixedValue`、`ZeroGradient`、`InletOutlet` 和 `NoSlip`。
-压力固定值保存在压力场条件中，因此不再局限于零表压。几何 patch、
-字段边界条件和 MPI processor 拓扑相互独立。
-
----
-
-## 网格文件格式
-
-### `params.txt`
-```
-<nx> <ny>
-```
-
-### `x.dat` / `y.dat`
-形状为 `(ny+1) × (nx+1)` 的节点坐标矩阵，行优先存储。
-
-### `bctype.dat` / `zoneid.dat`
-形状为 `ny × nx` 的整数矩阵，行优先存储。
-
-### `zoneuv.txt`
-每行对应一个 zone 的 `(u, v)` 速度，行号即 `zoneid` 值：
-```
-0.0  0.0    # zone 0：静止壁面
-1.0  0.0    # zone 1：顶盖，u=1
-```
-
----
+压力修正方程对有固定压力的边界直接施加 Dirichlet 行，并把边界贡献放入
+对角项；封闭区域没有固定压力时固定一个参考压力单元。边界代码先把 legacy
+编码转换为 patch，再由离散装配统一处理，不在主循环中散落判断整数编码。
 
 ## 后处理
 
-计算结束后，每个 MPI 进程会输出以下文件（`<rank>` 为进程编号）：
+```bash
+cd runs/ldc_re100
+python3 ../../tools/postprocess.py --data-dir result --ranks 4
 
-```
-u_<rank>.dat    # x 方向速度
-v_<rank>.dat    # y 方向速度
-p_<rank>.dat    # 压力场
-xc_<rank>.dat   # 单元中心 x 坐标
-yc_<rank>.dat   # 单元中心 y 坐标
+# 只导出拼接数据、VTK 和 Tecplot，不生成 PNG
+python3 ../../tools/postprocess.py --data-dir result --ranks 4 --no-plots
 ```
 
-每个文件只包含该 rank 拥有的真实列，不包含 ghost 列；按 rank 从小到大沿列拼接即可恢复全局场。
+`--ranks` 是 MPI 进程数，不是“进程数减一”；省略时自动发现从 0 开始的
+连续 rank 文件。输出到 `result/postprocess/`：
 
-运行后处理脚本将各进程结果拼接并可视化：
+- `u/v/p/xc/yc_combined.dat`：完整全局场；
+- `result.vtk`：保留非均匀 cell-center 坐标的 VTK structured grid；
+- `result.plt`：Tecplot ASCII POINT 数据；
+- `velocity_magnitude.png`、`pressure.png`、`streamlines.png`：可选图像。
+
+后处理不会裁剪边界单元，也不会翻转 y 坐标。由于 Matplotlib 的 streamplot
+要求等间距轴，流线图仅在显示阶段插值；数据文件和 VTK/Tecplot 使用原始坐标。
+
+## 验证
+
+在仓库根目录执行：
 
 ```bash
-python postprocess.py
-# 输入提示：请输入子进程数量 - 1（例如并行4个进程则输入3）
+make test
 ```
 
-脚本将输出：
-- `u/v/p/xc/yc_combined.dat`：拼接后的全局场数据
-- 速度幅值云图
-- 压力云图
-- 流线图
+测试覆盖：
 
----
+- 压力出口 Dirichlet 对角项、闭域压力参考和压力矩阵性质；
+- 稳态/非稳态动量时间项以及四个离散算子组合；
+- legacy 边界转换、非零固定压力、物理边界和 MPI Processor 拓扑。
 
-## 算法说明
-
-求解器采用经典 **SIMPLE**（Semi-Implicit Method for Pressure-Linked Equations）算法，每次迭代包含以下步骤：
-
-```
-1. 离散动量方程  →  求解 u*, v*（预测速度）
-2. Rhie-Chow 动量插值  →  计算面速度 u_face, v_face
-3. 构建压力修正方程  →  求解 p'
-4. 修正压力  p = p* + α_p · p'
-5. 修正速度  u* ← u* + f(p')
-6. 收敛判断（全局质量不平衡 + 速度场相对变化）
-```
-
-有定压出口时，压力修正采用固定值 `p'=0` 并将边界系数加入方程对角项；没有定压出口的闭域只设置一个参考压力单元。并行策略采用沿 x 方向的**域分解**，相邻子域间各设置 2 层 `Processor` ghost 单元，通过 `MPI_Sendrecv` 交换连续列缓冲区。
-
-稳态和非稳态共用同一个 SIMPLE 循环。动量方程由四个显式有限体积
-算子组成：`addDdt`、`addConvection`、`addLaplacian` 和
-`addPressureGradient`，最后统一应用速度方程松弛。
-
-当前 `NumericalSchemes` 明确限定为：
-
-| 项 | 格式 |
-|----|------|
-| 时间项 | `steadyState` 或一阶 `backwardEuler` |
-| `div(phi,U)` | 一阶 `upwind` |
-| `grad(p)` | 单元中心 `central` |
-| `laplacian(mu,U)` | 两点 `orthogonal` |
-| 面速度插值 | `linear` + Rhie-Chow 修正 |
-
-离散方式由 `NumericalSchemes` 管理；线性求解器、预条件器、绝对/相对
-容差由 `SolutionConfig` 管理；SIMPLE迭代、松弛和收敛条件由
-`SimpleControl` 管理。未实现的格式或求解器组合会在启动时明确拒绝。
-
-数值装配回归测试可通过 `make test` 执行：压力测试覆盖压力出口
-Dirichlet 对角项和闭域单参考压力；动量测试验证时间项和四算子组合；
-边界测试验证 legacy 转换、逐字段条件、非零固定压力和 MPI processor
-拓扑。
-
-可运行 `make test-pressure` 回归检查定压出口对角项、闭域参考压力、压力矩阵对称性和 PCG 收敛。
-
----
-
-## 示例：顶盖驱动方腔流
+生成器和后处理也可以独立检查：
 
 ```bash
-# 1. 生成 100×100 拉伸网格
-python gen.ipynb
-
-# 2. 使用 4 进程定常求解，Re=100
-mpirun -np 4 ./solver_simple_steady ldc_exp 1000 0.01
-
-# 3. 后处理与可视化（4进程，输入3）
-python plot.ipynb
+python3 tools/generate_mesh.py cavity --nx 16 --ny 12 --output-dir /tmp/taihocfd_mesh
+mpirun -np 2 ./boundary_model_test /tmp/taihocfd_mesh closed
 ```
 
-预期结果：中心处出现主涡，四角出现次级涡，与 Ghia et al. (1982) 基准解吻合。
-## 示例：顶盖驱动方腔流结果 Re=100
+## Notebook
 
-### 网格
+Notebook 仅作为交互式入口，实际逻辑位于 `tools/`：
 
-![mesh](image/mesh.png)
+- `examples/notebooks/gen.ipynb`：调用统一网格生成器；
+- `examples/notebooks/plot.ipynb`：调用统一后处理器；
+- `examples/notebooks/mesh_plt.ipynb`：检查网格方向和拉伸。
 
-### 速度场
-
-![velocity](image/ldc.png)
-### 流线
-
-![streamlines](image/stream.png)
+命令行脚本是批处理和复现实验的推荐入口。

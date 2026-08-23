@@ -24,7 +24,7 @@ void addLaplacian(
     double viscosity,
     LaplacianScheme scheme);
 
-void addPressureGradient(
+void addGradient(
     Mesh& mesh,
     Equation& equation,
     Eigen::VectorXd& source_v,

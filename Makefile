@@ -151,17 +151,17 @@ $(BOUNDARY_TEST_OBJ): tests/boundary_model_test.cpp | $(BUILD_DIR) $(REPORT_DIR)
 	@$(MPICXX) $(CXXFLAGS) $(INCLUDES) -MMD -MP -c $< -o $@
 
 test-pressure: $(TEST_TARGET)
-	@mpirun -np 1 ./$(TEST_TARGET) poiseuille
-	@mpirun -np 1 ./$(TEST_TARGET) ldc_uni
+	@mpirun -np 1 ./$(TEST_TARGET) examples/meshes/poiseuille
+	@mpirun -np 1 ./$(TEST_TARGET) examples/meshes/ldc_uniform
 	$(LOGC) "TEST" "压力出口与闭域参考压力测试通过"
 
 test-momentum: $(MOMENTUM_TEST_TARGET)
-	@mpirun -np 1 ./$(MOMENTUM_TEST_TARGET) poiseuille
+	@mpirun -np 1 ./$(MOMENTUM_TEST_TARGET) examples/meshes/poiseuille
 	$(LOGC) "TEST" "定常/非定常动量装配测试通过"
 
 test-boundary: $(BOUNDARY_TEST_TARGET)
-	@mpirun -np 2 ./$(BOUNDARY_TEST_TARGET) poiseuille open
-	@mpirun -np 2 ./$(BOUNDARY_TEST_TARGET) ldc_uni closed
+	@mpirun -np 2 ./$(BOUNDARY_TEST_TARGET) examples/meshes/poiseuille open
+	@mpirun -np 2 ./$(BOUNDARY_TEST_TARGET) examples/meshes/ldc_uniform closed
 	$(LOGC) "TEST" "patch 与字段边界条件转换测试通过"
 
 test: test-pressure test-momentum test-boundary

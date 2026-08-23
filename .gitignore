@@ -1,0 +1,22 @@
+# C++ build and compiler reports
+/build/
+/report/
+
+# Locally linked solver and test executables
+/solver_simple_steady
+/solver_simple_unsteady
+/pressure_matrix_test
+/momentum_time_term_test
+/boundary_model_test
+
+# Solver runs and generated analysis files
+/result/
+/runs/
+/poi_exp/
+/p.png
+/v.png
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/

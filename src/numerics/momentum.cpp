@@ -22,7 +22,7 @@ void assembleMomentum(
     addLaplacian(
         mesh, momentum, source_v, viscosity,
         schemes.velocity_laplacian);
-    addPressureGradient(
+    addGradient(
         mesh, momentum, source_v, schemes.pressure_gradient);
     applyVelocityEquationRelaxation(
         mesh, momentum, source_v, velocity_relaxation);

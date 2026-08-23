@@ -24,7 +24,9 @@ double scaledError(double actual, double expected) {
 int main(int argc, char* argv[]) {
     MPI_Init(&argc, &argv);
     try {
-        const std::string mesh_folder = argc == 2 ? argv[1] : "poiseuille";
+        const std::string mesh_folder = argc == 2
+            ? argv[1]
+            : "examples/meshes/poiseuille";
         Mesh mesh = readMesh(mesh_folder);
         initializeFlowFields(mesh);
 
@@ -64,7 +66,7 @@ int main(int argc, char* argv[]) {
         addLaplacian(
             mesh, decomposed, decomposed_v, viscosity,
             LaplacianScheme::Orthogonal);
-        addPressureGradient(
+        addGradient(
             mesh, decomposed, decomposed_v, GradientScheme::Central);
         applyVelocityEquationRelaxation(
             mesh, decomposed, decomposed_v, relaxation);
