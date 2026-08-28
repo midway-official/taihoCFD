@@ -11,9 +11,9 @@ void assemblePressureCorrection(
     Mesh& mesh,
     Equation& pressure,
     const Equation& momentum,
-    int rank,
-    int num_procs)
+    const ParallelContext& parallel)
 {
+    parallel.validate();
     pressure.reset();
     mesh.p_prime.setZero();
 
@@ -32,7 +32,7 @@ void assemblePressureCorrection(
         1,
         MPI_INT,
         MPI_MAX,
-        MPI_COMM_WORLD);
+        parallel.communicator);
 
     for (int n = 0; n < mesh.internumber; ++n) {
         const int i = mesh.interi[static_cast<std::size_t>(n)];
@@ -101,7 +101,7 @@ void assemblePressureCorrection(
               mesh.v_face(i - 1, j) * mesh.area_n(i, j));
     }
 
-    if (!global_has_pressure_outlet && rank == 0) {
+    if (!global_has_pressure_outlet && parallel.rank == 0) {
         if (mesh.internumber == 0) {
             throw std::runtime_error("rank 0 没有可用于压力参考的内部单元");
         }
@@ -116,7 +116,18 @@ void assemblePressureCorrection(
     }
 
     pressure.buildMatrix();
-    (void)num_procs;
+}
+
+void assemblePressureCorrection(
+    Mesh& mesh,
+    Equation& pressure,
+    const Equation& momentum,
+    int rank,
+    int num_procs)
+{
+    assemblePressureCorrection(
+        mesh, pressure, momentum,
+        ParallelContext{MPI_COMM_WORLD, rank, num_procs});
 }
 
 void correctPressure(Mesh& mesh, double pressure_relaxation) {
@@ -124,14 +135,11 @@ void correctPressure(Mesh& mesh, double pressure_relaxation) {
         throw std::invalid_argument("压力松弛因子必须在 (0, 1] 内");
     }
 
-    mesh.p_star = mesh.p;
     for (int n = 0; n < mesh.internumber; ++n) {
         const int i = mesh.interi[static_cast<std::size_t>(n)];
         const int j = mesh.interj[static_cast<std::size_t>(n)];
-        mesh.p_star(i, j) =
-            mesh.p(i, j) + pressure_relaxation * mesh.p_prime(i, j);
+        mesh.p(i, j) += pressure_relaxation * mesh.p_prime(i, j);
     }
-    mesh.p = mesh.p_star;
 
     for (const BoundaryPatch& patch : mesh.boundary_patches) {
         if (!hasFixedPressure(patch)) {
@@ -139,7 +147,6 @@ void correctPressure(Mesh& mesh, double pressure_relaxation) {
         }
         for (const CellIndex cell : patch.cells) {
             mesh.p(cell.i, cell.j) = patch.pressure.value;
-            mesh.p_star(cell.i, cell.j) = patch.pressure.value;
             mesh.p_prime(cell.i, cell.j) = 0.0;
         }
     }

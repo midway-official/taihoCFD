@@ -9,19 +9,21 @@ void addDdt(
     Equation& equation,
     Eigen::VectorXd& source_v,
     const TimeTerm& time_term,
+    double rho,
     TimeScheme scheme);
 
 void addConvection(
     Mesh& mesh,
     Equation& equation,
     Eigen::VectorXd& source_v,
+    double rho,
     ConvectionScheme scheme);
 
 void addLaplacian(
     Mesh& mesh,
     Equation& equation,
     Eigen::VectorXd& source_v,
-    double viscosity,
+    double dynamic_viscosity,
     LaplacianScheme scheme);
 
 void addGradient(

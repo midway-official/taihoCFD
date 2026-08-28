@@ -5,11 +5,14 @@
 #include <stdexcept>
 #include <vector>
 
-Mesh extractLocalMesh(const Mesh& original, int rank, int num_procs) {
+Mesh extractLocalMesh(
+    const Mesh& original,
+    const ParallelContext& parallel)
+{
     constexpr int ghost_layers = 2;
-    if (num_procs <= 0 || rank < 0 || rank >= num_procs) {
-        throw std::invalid_argument("非法 MPI rank/size");
-    }
+    parallel.validate();
+    const int rank = parallel.rank;
+    const int num_procs = parallel.size;
     if (original.nx < ghost_layers * num_procs) {
         throw std::runtime_error("每个 MPI 子域至少需要 2 个真实列以支持双 ghost 层");
     }
@@ -77,4 +80,9 @@ Mesh extractLocalMesh(const Mesh& original, int rank, int num_procs) {
     local.initGeometry();
     local.validate(false);
     return local;
+}
+
+Mesh extractLocalMesh(const Mesh& original, int rank, int num_procs) {
+    return extractLocalMesh(
+        original, ParallelContext{MPI_COMM_WORLD, rank, num_procs});
 }

@@ -1,4 +1,4 @@
-#include "solvers/solution_config.h"
+#include "solvers/solver_config.h"
 
 #include <cmath>
 #include <stdexcept>
@@ -13,8 +13,10 @@ bool validTolerance(double value) {
 
 void LinearSolverConfig::validate() const {
     if (!validTolerance(absolute_tolerance) ||
-        !validTolerance(relative_tolerance) || max_iterations <= 0) {
-        throw std::invalid_argument("线性求解器容差或迭代上限无效");
+        !validTolerance(relative_tolerance) || max_iterations <= 0 ||
+        !warm_start.has_value()) {
+        throw std::invalid_argument(
+            "线性求解器容差、迭代上限或 warm_start 无效");
     }
     const bool valid_pair =
         (solver == LinearSolverType::BiCGSTAB &&
@@ -27,12 +29,12 @@ void LinearSolverConfig::validate() const {
 }
 
 void SimpleControl::validate() const {
-    if (max_iterations <= 0 || non_orthogonal_correctors != 0 ||
+    if (max_iterations <= 0 ||
         !(pressure_relaxation > 0.0 && pressure_relaxation <= 1.0) ||
         !(velocity_relaxation > 0.0 && velocity_relaxation <= 1.0) ||
         !validTolerance(residual.continuity) ||
         !validTolerance(residual.velocity_change)) {
-        throw std::invalid_argument("SIMPLE 控制参数无效或请求了未实现的非正交修正");
+        throw std::invalid_argument("SIMPLE 控制参数无效");
     }
 }
 
@@ -44,6 +46,8 @@ void SolutionConfig::validate() const {
 
 std::string_view toString(LinearSolverType solver) {
     switch (solver) {
+        case LinearSolverType::Unset:
+            return "unset";
         case LinearSolverType::BiCGSTAB:
             return "BiCGSTAB";
         case LinearSolverType::PCG:
@@ -54,6 +58,8 @@ std::string_view toString(LinearSolverType solver) {
 
 std::string_view toString(PreconditionerType preconditioner) {
     switch (preconditioner) {
+        case PreconditionerType::Unset:
+            return "unset";
         case PreconditionerType::ILUT:
             return "ILUT";
         case PreconditionerType::IncompleteCholesky:

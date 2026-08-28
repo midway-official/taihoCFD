@@ -16,11 +16,9 @@ Equation::Equation(Mesh& mesh_value)
 {}
 
 void Equation::reset() {
-    A_p.setZero();
-    A_e.setZero();
-    A_w.setZero();
-    A_n.setZero();
-    A_s.setZero();
+    for (Eigen::MatrixXd* coefficient : {&A_p, &A_e, &A_w, &A_n, &A_s}) {
+        coefficient->setZero();
+    }
     source.setZero();
 }
 

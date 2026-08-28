@@ -1,7 +1,9 @@
 #pragma once
 
 #include "mesh/mesh.h"
+#include "parallel/parallel_context.h"
 
+void exchangeColumns(Eigen::MatrixXd& matrix, const ParallelContext& parallel);
 void exchangeColumns(Eigen::MatrixXd& matrix, int rank, int num_procs);
 
 void vectorToMatrix(

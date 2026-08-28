@@ -28,7 +28,6 @@ void resizeMeshStorage(Mesh& mesh, int ny, int nx) {
     mesh.vol.resize(ny, nx);
 
     mesh.p.resize(ny, nx);
-    mesh.p_star.resize(ny, nx);
     mesh.p_prime.resize(ny, nx);
     mesh.u_face.resize(ny, nx - 1);
     mesh.v_face.resize(ny - 1, nx);
@@ -65,7 +64,6 @@ void Mesh::initializeToZero() {
     area_n.setZero();
     vol.setZero();
     p.setZero();
-    p_star.setZero();
     p_prime.setZero();
     u_face.setZero();
     v_face.setZero();

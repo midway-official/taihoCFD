@@ -3,6 +3,7 @@
 #include "numerics/pressure_correction.h"
 #include "numerics/rhie_chow.h"
 #include "parallel/halo_exchange.h"
+#include "solvers/linear_solver.h"
 
 #include <mpi.h>
 
@@ -22,89 +23,87 @@ bool isHealthy(const LinearSolverResult& result) {
 }  // namespace
 
 SimpleSolver::SimpleSolver(
+    const SolverContext& context)
+    : context_(context),
+      momentum_(context_.mesh),
+      pressure_(context_.mesh),
+      source_v_(Eigen::VectorXd::Zero(context_.mesh.internumber)),
+      previous_u_(Eigen::VectorXd::Zero(context_.mesh.internumber)),
+      previous_v_(Eigen::VectorXd::Zero(context_.mesh.internumber))
+{
+    context_.validate();
+}
+
+SimpleSolver::SimpleSolver(
     Mesh& mesh,
-    double viscosity,
+    FluidProperties fluid,
     int rank,
     int num_procs,
     NumericalSchemes schemes,
     SolutionConfig solution)
-    : mesh_(mesh),
-      viscosity_(viscosity),
-      rank_(rank),
-      num_procs_(num_procs),
-      schemes_(schemes),
-      solution_(solution),
-      momentum_(mesh),
-      pressure_(mesh),
-      source_v_(Eigen::VectorXd::Zero(mesh.internumber)),
-      previous_u_(Eigen::VectorXd::Zero(mesh.internumber)),
-      previous_v_(Eigen::VectorXd::Zero(mesh.internumber))
-{
-    if (!(viscosity_ > 0.0) || !std::isfinite(viscosity_)) {
-        throw std::invalid_argument("动力粘度必须为正且有限");
-    }
-    if (rank_ < 0 || rank_ >= num_procs_) {
-        throw std::invalid_argument("非法 MPI rank/size");
-    }
-    schemes_.validate();
-    solution_.validate();
-}
+    : SimpleSolver(SolverContext{
+          mesh, fluid, schemes,
+          solution, ParallelContext{MPI_COMM_WORLD, rank, num_procs}})
+{}
 
-SimpleIterationResult SimpleSolver::solveIteration(const TimeTerm& time_term) {
-    matrixToVector(mesh_.u_star, previous_u_, mesh_);
-    matrixToVector(mesh_.v_star, previous_v_, mesh_);
+SolverIterationResult SimpleSolver::solveIteration(const TimeTerm& time_term) {
+    Mesh& mesh = context_.mesh;
+    const auto& parallel = context_.parallel;
+    matrixToVector(mesh.u_star, previous_u_, mesh);
+    matrixToVector(mesh.v_star, previous_v_, mesh);
 
     assembleMomentum(
-        mesh_, momentum_, source_v_, viscosity_,
-        solution_.simple.velocity_relaxation, time_term, schemes_);
-    mesh_.u = mesh_.u_star;
-    mesh_.v = mesh_.v_star;
+        mesh, momentum_, source_v_, context_.fluid,
+        context_.solution.simple.velocity_relaxation, time_term,
+        context_.schemes);
+    mesh.u = mesh.u_star;
+    mesh.v = mesh.v_star;
 
-    SimpleIterationResult result;
+    SolverIterationResult result;
     result.u = solveField(
-        momentum_, momentum_.source, mesh_, mesh_.u,
-        solution_.velocity, rank_, num_procs_);
+        momentum_, momentum_.source, mesh, mesh.u,
+        context_.solution.velocity, parallel);
     result.v = solveField(
-        momentum_, source_v_, mesh_, mesh_.v,
-        solution_.velocity, rank_, num_procs_);
+        momentum_, source_v_, mesh, mesh.v,
+        context_.solution.velocity, parallel);
 
-    exchangeColumns(momentum_.A_p, rank_, num_procs_);
+    exchangeColumns(momentum_.A_p, parallel);
     interpolateFaceVelocity(
-        mesh_, momentum_, schemes_.face_interpolation);
+        mesh, momentum_, context_.schemes.face_interpolation);
     assemblePressureCorrection(
-        mesh_, pressure_, momentum_, rank_, num_procs_);
+        mesh, pressure_, momentum_, parallel);
     result.pressure = solveField(
-        pressure_, pressure_.source, mesh_, mesh_.p_prime,
-        solution_.pressure, rank_, num_procs_);
+        pressure_, pressure_.source, mesh, mesh.p_prime,
+        context_.solution.pressure, parallel);
 
-    correctPressure(mesh_, solution_.simple.pressure_relaxation);
-    correctVelocity(mesh_, momentum_);
-    exchangeColumns(mesh_.p, rank_, num_procs_);
+    correctPressure(mesh, context_.solution.simple.pressure_relaxation);
+    correctVelocity(mesh, momentum_);
+    exchangeColumns(mesh.p, parallel);
 
     std::array<double, 6> local{};
-    for (int n = 0; n < mesh_.internumber; ++n) {
-        const int i = mesh_.interi[static_cast<std::size_t>(n)];
-        const int j = mesh_.interj[static_cast<std::size_t>(n)];
-        const double du = mesh_.u_star(i, j) - previous_u_[n];
-        const double dv = mesh_.v_star(i, j) - previous_v_[n];
+    for (int n = 0; n < mesh.internumber; ++n) {
+        const int i = mesh.interi[static_cast<std::size_t>(n)];
+        const int j = mesh.interj[static_cast<std::size_t>(n)];
+        const double du = mesh.u_star(i, j) - previous_u_[n];
+        const double dv = mesh.v_star(i, j) - previous_v_[n];
         local[0] += du * du;
         local[1] += dv * dv;
-        local[2] += mesh_.u_star(i, j) * mesh_.u_star(i, j);
-        local[3] += mesh_.v_star(i, j) * mesh_.v_star(i, j);
-        local[4] += mesh_.p_prime(i, j) * mesh_.p_prime(i, j);
-        local[5] += mesh_.p(i, j) * mesh_.p(i, j);
+        local[2] += mesh.u_star(i, j) * mesh.u_star(i, j);
+        local[3] += mesh.v_star(i, j) * mesh.v_star(i, j);
+        local[4] += mesh.p_prime(i, j) * mesh.p_prime(i, j);
+        local[5] += mesh.p(i, j) * mesh.p(i, j);
     }
     std::array<double, 6> global{};
     MPI_Allreduce(
         local.data(), global.data(), static_cast<int>(global.size()),
-        MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_DOUBLE, MPI_SUM, parallel.communicator);
 
     result.relative_velocity_change =
         std::sqrt(global[0] + global[1]) /
         std::max(std::sqrt(global[2] + global[3]), 1e-30);
     result.relative_pressure_correction =
         std::sqrt(global[4]) / std::max(std::sqrt(global[5]), 1e-30);
-    result.continuity = computeContinuityMetrics(mesh_);
+    result.continuity = computeContinuityMetrics(mesh, parallel);
     result.healthy =
         isHealthy(result.u) && isHealthy(result.v) &&
         isHealthy(result.pressure) &&
@@ -113,8 +112,9 @@ SimpleIterationResult SimpleSolver::solveIteration(const TimeTerm& time_term) {
     result.converged = result.healthy &&
         result.u.converged() && result.v.converged() &&
         result.pressure.converged() &&
-        result.continuity.relative <= solution_.simple.residual.continuity &&
+        result.continuity.relative <=
+            context_.solution.simple.residual.continuity &&
         result.relative_velocity_change <=
-            solution_.simple.residual.velocity_change;
+            context_.solution.simple.residual.velocity_change;
     return result;
 }

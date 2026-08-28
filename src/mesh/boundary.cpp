@@ -261,7 +261,6 @@ void initializeBoundaryConditions(Mesh& mesh) {
             mesh.v_star(cell.i, cell.j) = velocity.y();
             const double pressure = evaluatePressureBoundary(patch, 0.0);
             mesh.p(cell.i, cell.j) = pressure;
-            mesh.p_star(cell.i, cell.j) = pressure;
             mesh.p_prime(cell.i, cell.j) = 0.0;
         }
     }
@@ -307,7 +306,6 @@ void initializeFlowFields(Mesh& mesh) {
     mesh.v0.setZero();
     mesh.v_star.setZero();
     mesh.p.setZero();
-    mesh.p_star.setZero();
     mesh.p_prime.setZero();
     mesh.u_face.setZero();
     mesh.v_face.setZero();

@@ -36,8 +36,8 @@ PGO_DIR    := $(REPORT_DIR)/pgo
 # 目标程序
 # ==========================================================
 
-SOLVERS := solver_simple_steady solver_simple_unsteady
-TARGETS := $(SOLVERS)
+SOLVER := taiho_cfd
+TARGETS := $(SOLVER)
 TEST_TARGET := pressure_matrix_test
 MOMENTUM_TEST_TARGET := momentum_time_term_test
 BOUNDARY_TEST_TARGET := boundary_model_test
@@ -46,7 +46,7 @@ BOUNDARY_TEST_TARGET := boundary_model_test
 # 源文件
 # ==========================================================
 
-COMMON_SRCS  := $(SRC_DIR)/mesh/mesh.cpp \
+CORE_SRCS    := $(SRC_DIR)/mesh/mesh.cpp \
                 $(SRC_DIR)/mesh/geometry.cpp \
                 $(SRC_DIR)/mesh/boundary.cpp \
                 $(SRC_DIR)/numerics/equation.cpp \
@@ -60,31 +60,30 @@ COMMON_SRCS  := $(SRC_DIR)/mesh/mesh.cpp \
                 $(SRC_DIR)/numerics/continuity.cpp \
                 $(SRC_DIR)/parallel/domain_decomposition.cpp \
                 $(SRC_DIR)/parallel/halo_exchange.cpp \
+                $(SRC_DIR)/parallel/parallel_context.cpp \
                 $(SRC_DIR)/solvers/solution_config.cpp \
                 $(SRC_DIR)/solvers/linear_solver.cpp \
+                $(SRC_DIR)/solvers/flow_solver.cpp \
                 $(SRC_DIR)/solvers/simple_solver.cpp \
                 $(SRC_DIR)/io/mesh_reader.cpp \
-                $(SRC_DIR)/io/result_writer.cpp \
-                $(SRC_DIR)/apps/app_common.cpp \
+                $(SRC_DIR)/io/result_writer.cpp
+
+APP_SRCS     := $(SRC_DIR)/apps/case_config.cpp \
                 $(SRC_DIR)/apps/application.cpp
 
-STEADY_SRC   := $(SRC_DIR)/apps/steady_main.cpp
-UNSTEADY_SRC := $(SRC_DIR)/apps/unsteady_main.cpp
-
-ALL_SRCS := $(COMMON_SRCS) $(STEADY_SRC) $(UNSTEADY_SRC)
+ALL_SRCS := $(CORE_SRCS) $(APP_SRCS)
 
 # ==========================================================
 # 目标文件映射到 build 目录
 # ==========================================================
 
-COMMON_OBJS  := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(COMMON_SRCS))
-STEADY_OBJ   := $(BUILD_DIR)/apps/steady_main.o
-UNSTEADY_OBJ := $(BUILD_DIR)/apps/unsteady_main.o
+CORE_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(CORE_SRCS))
+APP_OBJS  := $(patsubst $(SRC_DIR)/%.cpp,$(BUILD_DIR)/%.o,$(APP_SRCS))
 PRESSURE_TEST_OBJ := $(BUILD_DIR)/pressure_matrix_test.o
 MOMENTUM_TEST_OBJ := $(BUILD_DIR)/momentum_time_term_test.o
 BOUNDARY_TEST_OBJ := $(BUILD_DIR)/boundary_model_test.o
 
-ALL_OBJS := $(COMMON_OBJS) $(STEADY_OBJ) $(UNSTEADY_OBJ)
+ALL_OBJS := $(CORE_OBJS) $(APP_OBJS)
 
 # 依赖文件
 DEPS := $(ALL_OBJS:.o=.d) $(PRESSURE_TEST_OBJ:.o=.d) \
@@ -116,25 +115,20 @@ all: $(REPORT_DIR) $(TARGETS)
 # 构建规则
 # ==========================================================
 
-solver_simple_steady: $(COMMON_OBJS) $(STEADY_OBJ)
+$(SOLVER): $(CORE_OBJS) $(APP_OBJS)
 	$(LOG) "LINK" "$@"
 	@$(MPICXX) $(CXXFLAGS) $^ -o $@
-	$(LOGC) "OK" "solver_simple_steady 链接成功"
+	$(LOGC) "OK" "$(SOLVER) 链接成功"
 
-solver_simple_unsteady: $(COMMON_OBJS) $(UNSTEADY_OBJ)
-	$(LOG) "LINK" "$@"
-	@$(MPICXX) $(CXXFLAGS) $^ -o $@
-	$(LOGC) "OK" "solver_simple_unsteady 链接成功"
-
-$(TEST_TARGET): $(COMMON_OBJS) $(PRESSURE_TEST_OBJ)
+$(TEST_TARGET): $(CORE_OBJS) $(PRESSURE_TEST_OBJ)
 	$(LOG) "LINK" "$@"
 	@$(MPICXX) $(CXXFLAGS) $^ -o $@
 
-$(MOMENTUM_TEST_TARGET): $(COMMON_OBJS) $(MOMENTUM_TEST_OBJ)
+$(MOMENTUM_TEST_TARGET): $(CORE_OBJS) $(MOMENTUM_TEST_OBJ)
 	$(LOG) "LINK" "$@"
 	@$(MPICXX) $(CXXFLAGS) $^ -o $@
 
-$(BOUNDARY_TEST_TARGET): $(COMMON_OBJS) $(BOUNDARY_TEST_OBJ)
+$(BOUNDARY_TEST_TARGET): $(CORE_OBJS) $(BOUNDARY_TEST_OBJ)
 	$(LOG) "LINK" "$@"
 	@$(MPICXX) $(CXXFLAGS) $^ -o $@
 
@@ -296,7 +290,7 @@ debug:
 clean:
 	$(LOG) "CLEAN" "清理构建产物"
 	@rm -rf $(BUILD_DIR) $(TARGETS) $(TEST_TARGET) $(MOMENTUM_TEST_TARGET) \
-	    $(BOUNDARY_TEST_TARGET)
+	    $(BOUNDARY_TEST_TARGET) solver_simple_steady solver_simple_unsteady
 
 clean-report:
 	$(LOG) "CLEAN" "清理报告"
@@ -345,7 +339,7 @@ help:
 .PHONY: all clean clean-report distclean debug help \
         report-vec report-asm report-pp report-simd \
         report-size report-flags report-all \
-        pgo-generate pgo-use test-pressure
+        pgo-generate pgo-use test test-pressure test-momentum test-boundary
 
 # ==========================================================
 # 自动依赖

@@ -7,20 +7,21 @@ void assembleMomentum(
     Mesh& mesh,
     Equation& momentum,
     Eigen::VectorXd& source_v,
-    double viscosity,
+    const FluidProperties& fluid,
     double velocity_relaxation,
     const TimeTerm& time_term,
     const NumericalSchemes& schemes)
 {
     schemes.validate();
+    fluid.validate();
     momentum.reset();
     source_v.setZero(mesh.internumber);
 
-    addDdt(mesh, momentum, source_v, time_term, schemes.time);
+    addDdt(mesh, momentum, source_v, time_term, fluid.rho, schemes.time);
     addConvection(
-        mesh, momentum, source_v, schemes.velocity_convection);
+        mesh, momentum, source_v, fluid.rho, schemes.velocity_convection);
     addLaplacian(
-        mesh, momentum, source_v, viscosity,
+        mesh, momentum, source_v, fluid.mu,
         schemes.velocity_laplacian);
     addGradient(
         mesh, momentum, source_v, schemes.pressure_gradient);

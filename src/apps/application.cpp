@@ -1,139 +1,153 @@
-#include "apps/app_common.h"
-
+#include "apps/case_config.h"
 #include "io/mesh_reader.h"
 #include "io/result_writer.h"
 #include "mesh/boundary.h"
 #include "parallel/domain_decomposition.h"
+#include "solvers/flow_solver.h"
 
 #include <mpi.h>
 
 #include <chrono>
+#include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
-SolutionConfig solutionConfig(
-    SimulationMode mode,
-    const SimulationParameters& parameters)
+void printSetup(
+    const CaseConfig& config,
+    const Mesh& mesh,
+    const ParallelContext& parallel)
 {
-    SolutionConfig config;
-    config.simple.max_iterations =
-        mode == SimulationMode::Steady ? parameters.steps : 30;
-    config.simple.pressure_relaxation = 0.3;
-    config.simple.velocity_relaxation =
-        mode == SimulationMode::Steady ? 0.5 : 0.7;
-    config.velocity.relative_tolerance = 1e-7;
-    config.velocity.max_iterations = 200;
-    config.pressure.relative_tolerance = 1e-7;
-    config.pressure.max_iterations = 1000;
-    config.simple.residual.continuity = 1e-7;
-    config.simple.residual.velocity_change =
-        mode == SimulationMode::Steady ? 1e-6 : 1e-4;
-    return config;
+    int global_cells = 0;
+    MPI_Reduce(
+        &mesh.internumber, &global_cells, 1, MPI_INT, MPI_SUM, 0,
+        parallel.communicator);
+    if (parallel.rank != 0) {
+        return;
+    }
+    std::cout << "TaihoCFD " << (config.transient() ? "transient" : "steady")
+              << " | MPI=" << parallel.size << " | cells=" << global_cells
+              << " | rho=" << config.fluid.rho << " | mu=" << config.fluid.mu;
+    if (config.transient()) {
+        std::cout << " | dt=" << config.time->delta_t
+                  << " | steps=" << config.time->steps;
+    }
+    std::cout << "\nschemes: ddt=" << toString(config.schemes.time)
+              << " div(U)=" << toString(config.schemes.velocity_convection)
+              << " grad(p)=" << toString(config.schemes.pressure_gradient)
+              << " laplacian(U)=" << toString(config.schemes.velocity_laplacian)
+              << " interpolation=" << toString(config.schemes.face_interpolation)
+              << "\nlinear: U=" << toString(config.solution.velocity.solver)
+              << '/' << toString(config.solution.velocity.preconditioner)
+              << " p=" << toString(config.solution.pressure.solver)
+              << '/' << toString(config.solution.pressure.preconditioner)
+              << " | SIMPLE max=" << config.solution.simple.max_iterations
+              << " | mass tol=" << config.solution.simple.residual.continuity
+              << " | dU tol=" << config.solution.simple.residual.velocity_change
+              << '\n';
 }
 
-void runSimulation(
-    SimulationMode mode,
-    const SimulationParameters& parameters,
-    int rank,
-    int num_procs)
+void printIteration(
+    int iteration,
+    const SolverIterationResult& result,
+    const ParallelContext& parallel,
+    const std::string& prefix)
 {
-    Mesh mesh = [&] {
-        Mesh original = readMesh(parameters.mesh_folder);
-        return extractLocalMesh(original, rank, num_procs);
-    }();
+    if (parallel.rank != 0) {
+        return;
+    }
+    std::cout << prefix << "SIMPLE " << std::setw(4) << iteration
+              << std::scientific << std::setprecision(3)
+              << " | lin(u,v,p)=" << result.u.relative_residual << ','
+              << result.v.relative_residual << ','
+              << result.pressure.relative_residual
+              << " | mass=" << result.continuity.relative
+              << " | dU=" << result.relative_velocity_change;
+    if (!result.healthy) {
+        std::cout << " | solver breakdown";
+    } else if (result.u.status == LinearSolverStatus::MaxIterations ||
+               result.v.status == LinearSolverStatus::MaxIterations ||
+               result.pressure.status == LinearSolverStatus::MaxIterations) {
+        std::cout << " | linear max-iter";
+    }
+    std::cout << '\n';
+}
+
+void runCase(const CaseConfig& config, const ParallelContext& parallel) {
+    Mesh mesh = extractLocalMesh(readMesh(config.mesh_path.string()), parallel);
     initializeFlowFields(mesh);
+    printSetup(config, mesh, parallel);
+    SolverContext context{
+        mesh, config.fluid, config.schemes, config.solution, parallel};
+    auto solver = createFlowSolver(config.algorithm, context);
 
-    const NumericalSchemes schemes = mode == SimulationMode::Steady
-        ? NumericalSchemes::steady()
-        : NumericalSchemes::backwardEuler();
-    const SolutionConfig solution = solutionConfig(mode, parameters);
-    printSimulationSetup(
-        mode, parameters, mesh, rank, num_procs, schemes, solution);
-    SimpleSolver solver(
-        mesh, parameters.viscosity, rank, num_procs, schemes, solution);
-
-    const int time_steps =
-        mode == SimulationMode::Steady ? 1 : parameters.steps;
-    const int simple_limit = solution.simple.max_iterations;
+    const int outer_steps = config.transient() ? config.time->steps : 1;
     const auto start = std::chrono::steady_clock::now();
-
-    for (int time_step = 1; time_step <= time_steps; ++time_step) {
-        const TimeTerm time_term = mode == SimulationMode::Steady
-            ? TimeTerm::none()
-            : TimeTerm::backwardEuler(parameters.dt, mesh.u0, mesh.v0);
+    for (int step = 1; step <= outer_steps; ++step) {
+        const TimeTerm time = config.transient()
+            ? TimeTerm::backwardEuler(
+                config.time->delta_t, mesh.u0, mesh.v0)
+            : TimeTerm::none();
         bool converged = false;
-        int completed_iterations = 0;
-
-        for (int iteration = 1; iteration <= simple_limit; ++iteration) {
-            const SimpleIterationResult result =
-                solver.solveIteration(time_term);
-            completed_iterations = iteration;
+        int completed = 0;
+        for (int iteration = 1;
+             iteration <= config.solution.simple.max_iterations; ++iteration) {
+            const SolverIterationResult result = solver->solveIteration(time);
+            completed = iteration;
             if (iteration == 1 || iteration % 10 == 0 ||
                 result.converged || !result.healthy) {
-                const std::string prefix = mode == SimulationMode::Steady
-                    ? std::string()
-                    : "time " + std::to_string(time_step) + " | ";
-                printIterationResult(
-                    iteration, result, rank, prefix.c_str());
+                printIteration(
+                    iteration, result, parallel,
+                    config.transient() ? "time " + std::to_string(step) + " | " : "");
             }
             if (!result.healthy) {
                 throw std::runtime_error("线性求解器发生数值失效");
             }
-            if (result.converged) {
-                converged = true;
+            if ((converged = result.converged)) {
                 break;
             }
         }
-
-        if (mode == SimulationMode::Steady) {
-            if (rank == 0) {
-                std::cout << (converged
-                    ? "SIMPLE converged"
-                    : "SIMPLE reached iteration limit")
-                    << " | iterations=" << completed_iterations << '\n';
-            }
-        } else {
-            if (!converged && rank == 0) {
-                std::cout << "time " << time_step
-                          << " | SIMPLE reached inner iteration limit\n";
-            }
+        if (parallel.rank == 0 && (!config.transient() || !converged)) {
+            std::cout << (config.transient() ? "time " + std::to_string(step) + " | " : "")
+                      << (converged ? "SIMPLE converged" : "SIMPLE reached iteration limit")
+                      << " | iterations=" << completed << '\n';
+        }
+        if (config.transient()) {
             mesh.u0 = mesh.u_star;
             mesh.v0 = mesh.v_star;
         }
     }
 
-    saveMeshData(mesh, rank, "result");
-    const double elapsed = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - start).count();
-    if (rank == 0) {
-        std::cout << (mode == SimulationMode::Steady
-            ? "steady completed"
-            : "unsteady completed")
-            << " | elapsed=" << elapsed << " s\n";
+    saveMeshData(mesh, parallel.rank, config.output_path.string());
+    if (parallel.rank == 0) {
+        const double elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start).count();
+        std::cout << "completed | elapsed=" << elapsed << " s\n";
     }
 }
 
 }  // namespace
 
-int runApplication(SimulationMode mode, int argc, char* argv[]) {
+int main(int argc, char* argv[]) {
     MPI_Init(&argc, &argv);
-    int rank = 0;
-    int num_procs = 1;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
-
+    const ParallelContext parallel = ParallelContext::world();
     try {
-        const SimulationParameters parameters = parseAndBroadcastParameters(
-            mode, argc, argv, rank, num_procs);
-        runSimulation(mode, parameters, rank, num_procs);
+        if (argc != 1) {
+            throw std::invalid_argument(
+                "TaihoCFD 不接受命令行参数；请在含 case.cfg 的算例目录运行");
+        }
+        runCase(
+            readCaseConfig(std::filesystem::current_path() / "case.cfg"),
+            parallel);
     } catch (const std::exception& error) {
-        std::cerr << "rank " << rank << " error: " << error.what() << '\n';
-        MPI_Abort(MPI_COMM_WORLD, 2);
+        std::cerr << "rank " << parallel.rank << " error: " << error.what()
+                  << '\n';
+        MPI_Abort(parallel.communicator, 2);
         return 2;
     }
-
     MPI_Finalize();
     return 0;
 }

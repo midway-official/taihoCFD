@@ -1,40 +1,24 @@
 #pragma once
 
-#include "numerics/continuity.h"
+#include "solvers/flow_solver.h"
 #include "numerics/momentum.h"
-#include "solvers/linear_solver.h"
-#include "solvers/solution_config.h"
 
-struct SimpleIterationResult {
-    LinearSolverResult u;
-    LinearSolverResult v;
-    LinearSolverResult pressure;
-    ContinuityMetrics continuity;
-    double relative_velocity_change = 0.0;
-    double relative_pressure_correction = 0.0;
-    bool healthy = true;
-    bool converged = false;
-};
-
-class SimpleSolver {
+class SimpleSolver final : public FlowSolver {
 public:
+    explicit SimpleSolver(const SolverContext& context);
+
     SimpleSolver(
         Mesh& mesh,
-        double viscosity,
+        FluidProperties fluid,
         int rank,
         int num_procs,
-        NumericalSchemes schemes = NumericalSchemes::steady(),
-        SolutionConfig solution = {});
+        NumericalSchemes schemes,
+        SolutionConfig solution);
 
-    SimpleIterationResult solveIteration(const TimeTerm& time_term);
+    SolverIterationResult solveIteration(const TimeTerm& time_term) override;
 
 private:
-    Mesh& mesh_;
-    double viscosity_;
-    int rank_;
-    int num_procs_;
-    NumericalSchemes schemes_;
-    SolutionConfig solution_;
+    SolverContext context_;
     Equation momentum_;
     Equation pressure_;
     Eigen::VectorXd source_v_;

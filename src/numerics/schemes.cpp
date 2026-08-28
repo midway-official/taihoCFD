@@ -3,11 +3,17 @@
 #include <stdexcept>
 
 NumericalSchemes NumericalSchemes::steady() {
-    return {};
+    return {
+        TimeScheme::SteadyState,
+        ConvectionScheme::Upwind,
+        GradientScheme::Central,
+        LaplacianScheme::Orthogonal,
+        InterpolationScheme::Linear,
+    };
 }
 
 NumericalSchemes NumericalSchemes::backwardEuler() {
-    NumericalSchemes schemes;
+    NumericalSchemes schemes = steady();
     schemes.time = TimeScheme::BackwardEuler;
     return schemes;
 }
@@ -27,6 +33,8 @@ void NumericalSchemes::validate() const {
 
 std::string_view toString(TimeScheme scheme) {
     switch (scheme) {
+        case TimeScheme::Unset:
+            return "unset";
         case TimeScheme::SteadyState:
             return "steadyState";
         case TimeScheme::BackwardEuler:
@@ -36,17 +44,21 @@ std::string_view toString(TimeScheme scheme) {
 }
 
 std::string_view toString(ConvectionScheme scheme) {
-    return scheme == ConvectionScheme::Upwind ? "upwind" : "unknown";
+    return scheme == ConvectionScheme::Upwind ? "upwind" :
+        (scheme == ConvectionScheme::Unset ? "unset" : "unknown");
 }
 
 std::string_view toString(GradientScheme scheme) {
-    return scheme == GradientScheme::Central ? "central" : "unknown";
+    return scheme == GradientScheme::Central ? "central" :
+        (scheme == GradientScheme::Unset ? "unset" : "unknown");
 }
 
 std::string_view toString(LaplacianScheme scheme) {
-    return scheme == LaplacianScheme::Orthogonal ? "orthogonal" : "unknown";
+    return scheme == LaplacianScheme::Orthogonal ? "orthogonal" :
+        (scheme == LaplacianScheme::Unset ? "unset" : "unknown");
 }
 
 std::string_view toString(InterpolationScheme scheme) {
-    return scheme == InterpolationScheme::Linear ? "linear" : "unknown";
+    return scheme == InterpolationScheme::Linear ? "linear" :
+        (scheme == InterpolationScheme::Unset ? "unset" : "unknown");
 }

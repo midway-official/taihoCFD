@@ -28,7 +28,8 @@ int main(int argc, char* argv[]) {
     Eigen::VectorXd source_v(mesh.internumber);
     const NumericalSchemes schemes = NumericalSchemes::steady();
     assembleMomentum(
-        mesh, momentum, source_v, 0.01, 0.5, TimeTerm::none(), schemes);
+        mesh, momentum, source_v, {1.0, 0.01}, 0.5,
+        TimeTerm::none(), schemes);
     interpolateFaceVelocity(mesh, momentum, schemes.face_interpolation);
     assemblePressureCorrection(mesh, pressure, momentum, 0, 1);
 
@@ -75,8 +76,14 @@ int main(int argc, char* argv[]) {
         std::max(pressure.source.norm(), 1e-30);
 
     Eigen::MatrixXd field = Eigen::MatrixXd::Zero(mesh.ny, mesh.nx);
-    LinearSolverConfig pressure_solver = SolutionConfig{}.pressure;
-    pressure_solver.max_iterations = 1000;
+    LinearSolverConfig pressure_solver{
+        LinearSolverType::PCG,
+        PreconditionerType::IncompleteCholesky,
+        1e-14,
+        1e-7,
+        1000,
+        false,
+    };
     const LinearSolverResult result = solveField(
         pressure, pressure.source, mesh, field, pressure_solver, 0, 1);
 

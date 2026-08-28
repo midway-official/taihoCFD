@@ -6,7 +6,11 @@
 #include <array>
 #include <cmath>
 
-ContinuityMetrics computeContinuityMetrics(const Mesh& mesh) {
+ContinuityMetrics computeContinuityMetrics(
+    const Mesh& mesh,
+    const ParallelContext& parallel)
+{
+    parallel.validate();
     constexpr double small = 1e-30;
     std::array<double, 3> local_sum{0.0, 0.0, 0.0};
     double local_max = 0.0;
@@ -30,9 +34,10 @@ ContinuityMetrics computeContinuityMetrics(const Mesh& mesh) {
     double global_max = 0.0;
     MPI_Allreduce(
         local_sum.data(), global_sum.data(), 3, MPI_DOUBLE, MPI_SUM,
-        MPI_COMM_WORLD);
+        parallel.communicator);
     MPI_Allreduce(
-        &local_max, &global_max, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        &local_max, &global_max, 1, MPI_DOUBLE, MPI_MAX,
+        parallel.communicator);
 
     ContinuityMetrics result;
     result.l1 = global_sum[0];
@@ -40,4 +45,8 @@ ContinuityMetrics computeContinuityMetrics(const Mesh& mesh) {
     result.max_abs = global_max;
     result.relative = global_sum[0] / std::max(global_sum[2], small);
     return result;
+}
+
+ContinuityMetrics computeContinuityMetrics(const Mesh& mesh) {
+    return computeContinuityMetrics(mesh, ParallelContext::world());
 }

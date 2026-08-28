@@ -14,15 +14,19 @@ namespace {
 
 constexpr double breakdown_tolerance = 1e-30;
 
-double globalDot(const Eigen::VectorXd& left, const Eigen::VectorXd& right) {
+double globalDot(
+    const Eigen::VectorXd& left,
+    const Eigen::VectorXd& right,
+    MPI_Comm communicator)
+{
     const double local = left.dot(right);
     double global = 0.0;
-    MPI_Allreduce(&local, &global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&local, &global, 1, MPI_DOUBLE, MPI_SUM, communicator);
     return global;
 }
 
-double globalNorm(const Eigen::VectorXd& value) {
-    return std::sqrt(std::max(globalDot(value, value), 0.0));
+double globalNorm(const Eigen::VectorXd& value, MPI_Comm communicator) {
+    return std::sqrt(std::max(globalDot(value, value, communicator), 0.0));
 }
 
 class DistributedOperator {
@@ -30,19 +34,17 @@ public:
     DistributedOperator(
         const Equation& equation,
         const Mesh& mesh,
-        int rank,
-        int num_procs)
+        const ParallelContext& parallel)
         : equation_(equation),
           mesh_(mesh),
-          rank_(rank),
-          num_procs_(num_procs),
+          parallel_(parallel),
           exchange_field_(Eigen::MatrixXd::Zero(mesh.ny, mesh.nx))
     {}
 
     void apply(const Eigen::VectorXd& input, Eigen::VectorXd& output) {
         output.noalias() = equation_.A * input;
         vectorToMatrix(input, exchange_field_, mesh_);
-        exchangeColumns(exchange_field_, rank_, num_procs_);
+        exchangeColumns(exchange_field_, parallel_);
 
         for (int n = 0; n < mesh_.internumber; ++n) {
             const int i = mesh_.interi[static_cast<std::size_t>(n)];
@@ -59,8 +61,7 @@ public:
 private:
     const Equation& equation_;
     const Mesh& mesh_;
-    int rank_;
-    int num_procs_;
+    const ParallelContext& parallel_;
     Eigen::MatrixXd exchange_field_;
 };
 
@@ -75,12 +76,15 @@ LinearSolverResult finalResult(
     const LinearSolverConfig& config,
     const Eigen::VectorXd& right_hand_side,
     const Eigen::VectorXd& solution,
-    DistributedOperator& distributed_operator)
+    DistributedOperator& distributed_operator,
+    const ParallelContext& parallel)
 {
     Eigen::VectorXd matrix_solution(solution.size());
     distributed_operator.apply(solution, matrix_solution);
-    const double final_residual = globalNorm(right_hand_side - matrix_solution);
-    const double right_hand_side_norm = globalNorm(right_hand_side);
+    const double final_residual = globalNorm(
+        right_hand_side - matrix_solution, parallel.communicator);
+    const double right_hand_side_norm = globalNorm(
+        right_hand_side, parallel.communicator);
     const double reporting_scale = std::max(
         convergenceScale(initial_residual, right_hand_side_norm),
         config.absolute_tolerance / config.relative_tolerance);
@@ -93,6 +97,63 @@ LinearSolverResult finalResult(
         final_residual / reporting_scale,
     };
 }
+
+class LinearSolveWorkspace {
+public:
+    LinearSolveWorkspace(
+        const Equation& equation,
+        const Eigen::VectorXd& right_hand_side_value,
+        const Mesh& mesh_value,
+        Eigen::MatrixXd& field_value,
+        const LinearSolverConfig& config_value,
+        const ParallelContext& parallel_value,
+        bool warm_start)
+        : right_hand_side(right_hand_side_value),
+          mesh(mesh_value),
+          field(field_value),
+          config(config_value),
+          parallel(parallel_value),
+          distributed_operator(equation, mesh, parallel),
+          solution(mesh.internumber),
+          residual(mesh.internumber)
+    {
+        parallel.validate();
+        if (warm_start) {
+            matrixToVector(field, solution, mesh);
+        } else {
+            solution.setZero();
+        }
+
+        Eigen::VectorXd matrix_solution(mesh.internumber);
+        distributed_operator.apply(solution, matrix_solution);
+        residual = right_hand_side - matrix_solution;
+        initial_residual = globalNorm(residual, parallel.communicator);
+        const double scale = convergenceScale(
+            initial_residual,
+            globalNorm(right_hand_side, parallel.communicator));
+        target = std::max(
+            config.relative_tolerance * scale, config.absolute_tolerance);
+    }
+
+    LinearSolverResult finish(LinearSolverStatus status, int iterations) {
+        vectorToMatrix(solution, field, mesh);
+        exchangeColumns(field, parallel);
+        return finalResult(
+            status, iterations, initial_residual, config,
+            right_hand_side, solution, distributed_operator, parallel);
+    }
+
+    const Eigen::VectorXd& right_hand_side;
+    const Mesh& mesh;
+    Eigen::MatrixXd& field;
+    const LinearSolverConfig& config;
+    const ParallelContext& parallel;
+    DistributedOperator distributed_operator;
+    Eigen::VectorXd solution;
+    Eigen::VectorXd residual;
+    double initial_residual = 0.0;
+    double target = 0.0;
+};
 
 bool invalidScalar(double value) {
     return !std::isfinite(value);
@@ -118,8 +179,7 @@ LinearSolverResult solveFieldPCG(
     const Mesh& mesh,
     Eigen::MatrixXd& field,
     const LinearSolverConfig& config,
-    int rank,
-    int num_procs,
+    const ParallelContext& parallel,
     bool warm_start)
 {
     config.validate();
@@ -128,48 +188,33 @@ LinearSolverResult solveFieldPCG(
         throw std::invalid_argument("PCG 参数无效");
     }
 
-    Eigen::VectorXd solution(mesh.internumber);
-    if (warm_start) {
-        matrixToVector(field, solution, mesh);
-    } else {
-        solution.setZero();
-    }
-
-    DistributedOperator distributed_operator(equation, mesh, rank, num_procs);
-    Eigen::VectorXd matrix_solution(mesh.internumber);
-    distributed_operator.apply(solution, matrix_solution);
-    Eigen::VectorXd residual = right_hand_side - matrix_solution;
+    LinearSolveWorkspace workspace(
+        equation, right_hand_side, mesh, field, config, parallel, warm_start);
 
     Eigen::IncompleteCholesky<double> preconditioner;
     preconditioner.compute(equation.A);
     if (preconditioner.info() != Eigen::Success) {
         throw std::runtime_error("压力矩阵的 incomplete-Cholesky 分解失败");
     }
-    Eigen::VectorXd preconditioned = preconditioner.solve(residual);
+    Eigen::VectorXd preconditioned =
+        preconditioner.solve(workspace.residual);
     Eigen::VectorXd direction = preconditioned;
     Eigen::VectorXd matrix_direction(mesh.internumber);
 
-    const double initial_residual = globalNorm(residual);
-    const double scale = convergenceScale(
-        initial_residual, globalNorm(right_hand_side));
-    const double target = std::max(
-        config.relative_tolerance * scale, config.absolute_tolerance);
-    if (initial_residual <= target) {
-        vectorToMatrix(solution, field, mesh);
-        exchangeColumns(field, rank, num_procs);
-        return finalResult(
-            LinearSolverStatus::Converged, 0, initial_residual, config,
-            right_hand_side, solution, distributed_operator);
+    if (workspace.initial_residual <= workspace.target) {
+        return workspace.finish(LinearSolverStatus::Converged, 0);
     }
 
-    double residual_preconditioned = globalDot(residual, preconditioned);
+    double residual_preconditioned =
+        globalDot(
+            workspace.residual, preconditioned, parallel.communicator);
     LinearSolverStatus status = LinearSolverStatus::MaxIterations;
     int iterations = 0;
 
     for (int iteration = 1; iteration <= config.max_iterations; ++iteration) {
-        distributed_operator.apply(direction, matrix_direction);
+        workspace.distributed_operator.apply(direction, matrix_direction);
         const double direction_matrix_direction =
-            globalDot(direction, matrix_direction);
+            globalDot(direction, matrix_direction, parallel.communicator);
         if (invalidScalar(direction_matrix_direction) ||
             direction_matrix_direction <= breakdown_tolerance ||
             invalidScalar(residual_preconditioned)) {
@@ -180,26 +225,28 @@ LinearSolverResult solveFieldPCG(
 
         const double alpha = residual_preconditioned /
             direction_matrix_direction;
-        solution.noalias() += alpha * direction;
-        residual.noalias() -= alpha * matrix_direction;
-        const double residual_norm = globalNorm(residual);
+        workspace.solution.noalias() += alpha * direction;
+        workspace.residual.noalias() -= alpha * matrix_direction;
+        const double residual_norm = globalNorm(
+            workspace.residual, parallel.communicator);
         iterations = iteration;
         if (invalidScalar(residual_norm)) {
             status = LinearSolverStatus::Breakdown;
             break;
         }
-        if (residual_norm <= target) {
+        if (residual_norm <= workspace.target) {
             status = LinearSolverStatus::Converged;
             break;
         }
 
-        preconditioned = preconditioner.solve(residual);
+        preconditioned = preconditioner.solve(workspace.residual);
         if (preconditioner.info() != Eigen::Success) {
             status = LinearSolverStatus::Breakdown;
             break;
         }
         const double next_residual_preconditioned =
-            globalDot(residual, preconditioned);
+            globalDot(
+                workspace.residual, preconditioned, parallel.communicator);
         if (invalidScalar(next_residual_preconditioned) ||
             std::abs(residual_preconditioned) <= breakdown_tolerance) {
             status = LinearSolverStatus::Breakdown;
@@ -211,11 +258,7 @@ LinearSolverResult solveFieldPCG(
         residual_preconditioned = next_residual_preconditioned;
     }
 
-    vectorToMatrix(solution, field, mesh);
-    exchangeColumns(field, rank, num_procs);
-    return finalResult(
-        status, iterations, initial_residual, config,
-        right_hand_side, solution, distributed_operator);
+    return workspace.finish(status, iterations);
 }
 
 LinearSolverResult solveFieldBiCGSTAB(
@@ -224,8 +267,7 @@ LinearSolverResult solveFieldBiCGSTAB(
     const Mesh& mesh,
     Eigen::MatrixXd& field,
     const LinearSolverConfig& config,
-    int rank,
-    int num_procs,
+    const ParallelContext& parallel,
     bool warm_start)
 {
     config.validate();
@@ -234,18 +276,9 @@ LinearSolverResult solveFieldBiCGSTAB(
         throw std::invalid_argument("BiCGSTAB 参数无效");
     }
 
-    Eigen::VectorXd solution(mesh.internumber);
-    if (warm_start) {
-        matrixToVector(field, solution, mesh);
-    } else {
-        solution.setZero();
-    }
-
-    DistributedOperator distributed_operator(equation, mesh, rank, num_procs);
-    Eigen::VectorXd matrix_solution(mesh.internumber);
-    distributed_operator.apply(solution, matrix_solution);
-    Eigen::VectorXd residual = right_hand_side - matrix_solution;
-    const Eigen::VectorXd shadow_residual = residual;
+    LinearSolveWorkspace workspace(
+        equation, right_hand_side, mesh, field, config, parallel, warm_start);
+    const Eigen::VectorXd shadow_residual = workspace.residual;
 
     Eigen::IncompleteLUT<double> preconditioner;
     preconditioner.setDroptol(1e-3);
@@ -262,17 +295,8 @@ LinearSolverResult solveFieldBiCGSTAB(
     Eigen::VectorXd preconditioned_intermediate(mesh.internumber);
     Eigen::VectorXd matrix_intermediate(mesh.internumber);
 
-    const double initial_residual = globalNorm(residual);
-    const double scale = convergenceScale(
-        initial_residual, globalNorm(right_hand_side));
-    const double target = std::max(
-        config.relative_tolerance * scale, config.absolute_tolerance);
-    if (initial_residual <= target) {
-        vectorToMatrix(solution, field, mesh);
-        exchangeColumns(field, rank, num_procs);
-        return finalResult(
-            LinearSolverStatus::Converged, 0, initial_residual, config,
-            right_hand_side, solution, distributed_operator);
+    if (workspace.initial_residual <= workspace.target) {
+        return workspace.finish(LinearSolverStatus::Converged, 0);
     }
 
     double previous_rho = 1.0;
@@ -282,7 +306,8 @@ LinearSolverResult solveFieldBiCGSTAB(
     int iterations = 0;
 
     for (int iteration = 1; iteration <= config.max_iterations; ++iteration) {
-        const double rho = globalDot(shadow_residual, residual);
+        const double rho = globalDot(
+            shadow_residual, workspace.residual, parallel.communicator);
         if (invalidScalar(rho) || std::abs(rho) <= breakdown_tolerance ||
             invalidScalar(omega) || std::abs(omega) <= breakdown_tolerance) {
             status = LinearSolverStatus::Breakdown;
@@ -291,17 +316,20 @@ LinearSolverResult solveFieldBiCGSTAB(
         }
 
         const double beta = (rho / previous_rho) * (alpha / omega);
-        direction = residual + beta * (direction - omega * matrix_direction);
+        direction = workspace.residual +
+            beta * (direction - omega * matrix_direction);
         preconditioned_direction = preconditioner.solve(direction);
         if (preconditioner.info() != Eigen::Success) {
             status = LinearSolverStatus::Breakdown;
             iterations = iteration - 1;
             break;
         }
-        distributed_operator.apply(preconditioned_direction, matrix_direction);
+        workspace.distributed_operator.apply(
+            preconditioned_direction, matrix_direction);
 
         const double shadow_matrix_direction =
-            globalDot(shadow_residual, matrix_direction);
+            globalDot(
+                shadow_residual, matrix_direction, parallel.communicator);
         if (invalidScalar(shadow_matrix_direction) ||
             std::abs(shadow_matrix_direction) <= breakdown_tolerance) {
             status = LinearSolverStatus::Breakdown;
@@ -309,17 +337,18 @@ LinearSolverResult solveFieldBiCGSTAB(
             break;
         }
         alpha = rho / shadow_matrix_direction;
-        intermediate = residual - alpha * matrix_direction;
+        intermediate = workspace.residual - alpha * matrix_direction;
 
-        const double intermediate_norm = globalNorm(intermediate);
+        const double intermediate_norm = globalNorm(
+            intermediate, parallel.communicator);
         if (invalidScalar(intermediate_norm)) {
             status = LinearSolverStatus::Breakdown;
             iterations = iteration;
             break;
         }
-        if (intermediate_norm <= target) {
-            solution.noalias() += alpha * preconditioned_direction;
-            residual = intermediate;
+        if (intermediate_norm <= workspace.target) {
+            workspace.solution.noalias() += alpha * preconditioned_direction;
+            workspace.residual = intermediate;
             status = LinearSolverStatus::Converged;
             iterations = iteration;
             break;
@@ -331,7 +360,7 @@ LinearSolverResult solveFieldBiCGSTAB(
             iterations = iteration;
             break;
         }
-        distributed_operator.apply(
+        workspace.distributed_operator.apply(
             preconditioned_intermediate, matrix_intermediate);
 
         const double local_products[2] = {
@@ -341,7 +370,7 @@ LinearSolverResult solveFieldBiCGSTAB(
         double global_products[2] = {0.0, 0.0};
         MPI_Allreduce(
             local_products, global_products, 2, MPI_DOUBLE, MPI_SUM,
-            MPI_COMM_WORLD);
+            parallel.communicator);
         if (invalidScalar(global_products[0]) ||
             invalidScalar(global_products[1]) ||
             global_products[1] <= breakdown_tolerance) {
@@ -356,28 +385,49 @@ LinearSolverResult solveFieldBiCGSTAB(
             break;
         }
 
-        solution.noalias() +=
+        workspace.solution.noalias() +=
             alpha * preconditioned_direction +
             omega * preconditioned_intermediate;
-        residual = intermediate - omega * matrix_intermediate;
-        const double residual_norm = globalNorm(residual);
+        workspace.residual = intermediate - omega * matrix_intermediate;
+        const double residual_norm = globalNorm(
+            workspace.residual, parallel.communicator);
         iterations = iteration;
         if (invalidScalar(residual_norm)) {
             status = LinearSolverStatus::Breakdown;
             break;
         }
-        if (residual_norm <= target) {
+        if (residual_norm <= workspace.target) {
             status = LinearSolverStatus::Converged;
             break;
         }
         previous_rho = rho;
     }
 
-    vectorToMatrix(solution, field, mesh);
-    exchangeColumns(field, rank, num_procs);
-    return finalResult(
-        status, iterations, initial_residual, config,
-        right_hand_side, solution, distributed_operator);
+    return workspace.finish(status, iterations);
+}
+
+LinearSolverResult solveField(
+    const Equation& equation,
+    const Eigen::VectorXd& right_hand_side,
+    const Mesh& mesh,
+    Eigen::MatrixXd& field,
+    const LinearSolverConfig& config,
+    const ParallelContext& parallel)
+{
+    config.validate();
+    switch (config.solver) {
+        case LinearSolverType::Unset:
+            break;
+        case LinearSolverType::BiCGSTAB:
+            return solveFieldBiCGSTAB(
+                equation, right_hand_side, mesh, field, config,
+                parallel, config.warm_start.value());
+        case LinearSolverType::PCG:
+            return solveFieldPCG(
+                equation, right_hand_side, mesh, field, config,
+                parallel, config.warm_start.value());
+    }
+    throw std::invalid_argument("未知线性求解器类型");
 }
 
 LinearSolverResult solveField(
@@ -389,16 +439,7 @@ LinearSolverResult solveField(
     int rank,
     int num_procs)
 {
-    config.validate();
-    switch (config.solver) {
-        case LinearSolverType::BiCGSTAB:
-            return solveFieldBiCGSTAB(
-                equation, right_hand_side, mesh, field, config,
-                rank, num_procs, config.warm_start);
-        case LinearSolverType::PCG:
-            return solveFieldPCG(
-                equation, right_hand_side, mesh, field, config,
-                rank, num_procs, config.warm_start);
-    }
-    throw std::invalid_argument("未知线性求解器类型");
+    return solveField(
+        equation, right_hand_side, mesh, field, config,
+        ParallelContext{MPI_COMM_WORLD, rank, num_procs});
 }

@@ -3,32 +3,37 @@
 #include <string_view>
 
 enum class TimeScheme {
+    Unset,
     SteadyState,
     BackwardEuler,
 };
 
 enum class ConvectionScheme {
+    Unset,
     Upwind,
 };
 
 enum class GradientScheme {
+    Unset,
     Central,
 };
 
 enum class LaplacianScheme {
+    Unset,
     Orthogonal,
 };
 
 enum class InterpolationScheme {
+    Unset,
     Linear,
 };
 
 struct NumericalSchemes {
-    TimeScheme time = TimeScheme::SteadyState;
-    ConvectionScheme velocity_convection = ConvectionScheme::Upwind;
-    GradientScheme pressure_gradient = GradientScheme::Central;
-    LaplacianScheme velocity_laplacian = LaplacianScheme::Orthogonal;
-    InterpolationScheme face_interpolation = InterpolationScheme::Linear;
+    TimeScheme time = TimeScheme::Unset;
+    ConvectionScheme velocity_convection = ConvectionScheme::Unset;
+    GradientScheme pressure_gradient = GradientScheme::Unset;
+    LaplacianScheme velocity_laplacian = LaplacianScheme::Unset;
+    InterpolationScheme face_interpolation = InterpolationScheme::Unset;
 
     static NumericalSchemes steady();
     static NumericalSchemes backwardEuler();

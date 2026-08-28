@@ -5,12 +5,14 @@
 # Locally linked solver and test executables
 /solver_simple_steady
 /solver_simple_unsteady
+/taiho_cfd
 /pressure_matrix_test
 /momentum_time_term_test
 /boundary_model_test
 
 # Solver runs and generated analysis files
 /result/
+/examples/cases/*/result/
 /runs/
 /poi_exp/
 /p.png

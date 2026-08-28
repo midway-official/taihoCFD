@@ -27,7 +27,6 @@ struct Mesh {
     Eigen::MatrixXd vol;
 
     Eigen::MatrixXd p;
-    Eigen::MatrixXd p_star;
     Eigen::MatrixXd p_prime;
     Eigen::MatrixXd u_face;
     Eigen::MatrixXd v_face;

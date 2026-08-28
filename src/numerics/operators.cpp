@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
@@ -121,6 +122,12 @@ void requireImplemented(bool condition, const char* message) {
     }
 }
 
+void requirePositiveFinite(double value, const char* name) {
+    if (!(value > 0.0) || !std::isfinite(value)) {
+        throw std::invalid_argument(std::string(name) + "必须为正有限数");
+    }
+}
+
 }  // namespace
 
 void addDdt(
@@ -128,6 +135,7 @@ void addDdt(
     Equation& equation,
     Eigen::VectorXd& source_v,
     const TimeTerm& time_term,
+    double rho,
     TimeScheme scheme)
 {
     if (scheme == TimeScheme::SteadyState) {
@@ -147,10 +155,11 @@ void addDdt(
         time_term.v_previous->cols() != mesh.nx) {
         throw std::invalid_argument("backwardEuler 历史速度场或 dt 无效");
     }
+    requirePositiveFinite(rho, "rho ");
     for (int n = 0; n < mesh.internumber; ++n) {
         const int i = mesh.interi[static_cast<std::size_t>(n)];
         const int j = mesh.interj[static_cast<std::size_t>(n)];
-        const double coefficient = mesh.vol(i, j) / time_term.dt;
+        const double coefficient = rho * mesh.vol(i, j) / time_term.dt;
         equation.A_p(i, j) += coefficient;
         equation.source[n] += coefficient * (*time_term.u_previous)(i, j);
         source_v[n] += coefficient * (*time_term.v_previous)(i, j);
@@ -161,19 +170,22 @@ void addConvection(
     Mesh& mesh,
     Equation& equation,
     Eigen::VectorXd& source_v,
+    double rho,
     ConvectionScheme scheme)
 {
     requireImplemented(
         scheme == ConvectionScheme::Upwind,
         "尚未实现指定的对流格式");
+    requirePositiveFinite(rho, "rho ");
     for (int n = 0; n < mesh.internumber; ++n) {
         const int i = mesh.interi[static_cast<std::size_t>(n)];
         const int j = mesh.interj[static_cast<std::size_t>(n)];
         const auto faces = cellFaces(mesh, i, j);
         for (std::size_t face_index = 0; face_index < faces.size(); ++face_index) {
             const FaceData& face = faces[face_index];
-            const double outflow = std::max(face.outward_flux, 0.0);
-            const double inflow = std::max(-face.outward_flux, 0.0);
+            const double mass_flux = rho * face.outward_flux;
+            const double outflow = std::max(mass_flux, 0.0);
+            const double inflow = std::max(-mass_flux, 0.0);
             equation.A_p(i, j) += outflow;
             if (isCoupledCell(mesh, face.neighbour_i, face.neighbour_j)) {
                 neighbourCoefficient(
@@ -191,22 +203,21 @@ void addLaplacian(
     Mesh& mesh,
     Equation& equation,
     Eigen::VectorXd& source_v,
-    double viscosity,
+    double dynamic_viscosity,
     LaplacianScheme scheme)
 {
     requireImplemented(
         scheme == LaplacianScheme::Orthogonal,
         "尚未实现指定的 Laplacian 格式");
-    if (!(viscosity > 0.0) || !std::isfinite(viscosity)) {
-        throw std::invalid_argument("动力粘度必须为正有限数");
-    }
+    requirePositiveFinite(dynamic_viscosity, "动力粘度 ");
     for (int n = 0; n < mesh.internumber; ++n) {
         const int i = mesh.interi[static_cast<std::size_t>(n)];
         const int j = mesh.interj[static_cast<std::size_t>(n)];
         const auto faces = cellFaces(mesh, i, j);
         for (std::size_t face_index = 0; face_index < faces.size(); ++face_index) {
             const FaceData& face = faces[face_index];
-            const double diffusion = face.area * viscosity / face.distance;
+            const double diffusion =
+                face.area * dynamic_viscosity / face.distance;
             if (isCoupledCell(mesh, face.neighbour_i, face.neighbour_j)) {
                 equation.A_p(i, j) += diffusion;
                 neighbourCoefficient(
